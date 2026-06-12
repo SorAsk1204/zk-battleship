@@ -63,8 +63,13 @@ export function occupancyGrid(b: Board): Uint8Array {
   return grid;
 }
 
-/** (x,y) 是否被任意船占用。与 shot 电路的 result 语义一致(0=miss,1=hit)。 */
+/**
+ * (x,y) 是否被任意船占用。与 shot 电路的 result 语义一致(0=miss,1=hit)。
+ * 定义域:x,y ∈ 0–9 整数;域外输入(非整数、负数、>9)一律返回 0。
+ * 本函数是与电路对拍的真理源,垃圾输入不得给出语义错误的 1。
+ */
 export function isHit(b: Board, x: number, y: number): 0 | 1 {
+  if (!isCoord(x) || !isCoord(y)) return 0;
   for (let i = 0; i < 5; i++) {
     const s = b[i];
     const len = SHIP_LENGTHS[i];

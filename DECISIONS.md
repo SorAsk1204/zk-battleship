@@ -46,3 +46,7 @@ pnpm 11 起 .npmrc 仅承载 auth/registry;node-linker 等全部配置改在 pnp
 ### 2026-06-12 Task 0.2 — blake-hash 拒绝构建而非放行;circomlibjs 互证保留
 
 引入 circomlibjs(devDep,仅作 Poseidon 三方互证)后 `pnpm install` 如预期报 `ERR_PNPM_IGNORED_BUILDS: blake-hash@2.0.0`(node-gyp 原生包)。**未放行,而是在 allowBuilds 显式置 `blake-hash: false`(拒绝构建)**:circomlibjs 的 Poseidon 走 wasm 实现,实测不依赖 blake-hash 原生绑定(`buildPoseidon()` 加载与计算均正常,互证测试绿);拒绝构建可免去对本机 MSVC 工具链的依赖,可复现性更好。与 Task 0.1 预判的"按同法放行"不同,特此记录。若后续(M1 电路测试)有代码路径真正触达 blake-hash,再改 `true` 并验证本机能编译。
+
+### 2026-06-12 Task 0.2 — D2 的"双入口"实际落地为三入口(新增 `./proof`)
+
+D2 裁决写的是双入口(`"."` 浏览器安全 + `"./node"` Node 专用),实际落地为**三入口**,新增 `./proof` 承载 `formatProofCalldata`。理由:该函数依赖 snarkjs(`groth16.exportSolidityCallData`),而 snarkjs 不能进 `.`(会被拖进浏览器主线程 bundle,违反 D2 的浏览器安全纪律);同时 D3 要求 formatProofCalldata 全仓唯一实现且被 web/e2e re-export——web 端必须能引到它,故不能塞进 `./node`(那会连带 fullProve/artifactPaths 的 Node 依赖),只能独立成 `./proof` 入口。

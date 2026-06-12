@@ -21,7 +21,23 @@ export async function formatProofCalldata(
   publicSignals: string[],
 ): Promise<ProofCalldata> {
   const calldata = await snarkjs.groth16.exportSolidityCallData(proof, publicSignals);
-  const [a, b, c, pubSignals] = JSON.parse('[' + calldata + ']') as [
+  const parsed: unknown = JSON.parse('[' + calldata + ']');
+  // 形状粗校验:[a:len2, b:2x2, c:len2, pubSignals:array],防 snarkjs 输出格式变动悄悄产出坏 calldata
+  const shapeOk =
+    Array.isArray(parsed) &&
+    parsed.length === 4 &&
+    Array.isArray(parsed[0]) && parsed[0].length === 2 &&
+    Array.isArray(parsed[1]) && parsed[1].length === 2 &&
+    Array.isArray(parsed[1][0]) && parsed[1][0].length === 2 &&
+    Array.isArray(parsed[1][1]) && parsed[1][1].length === 2 &&
+    Array.isArray(parsed[2]) && parsed[2].length === 2 &&
+    Array.isArray(parsed[3]);
+  if (!shapeOk) {
+    throw new Error(
+      `formatProofCalldata: exportSolidityCallData 输出形状异常,calldata 前 120 字符: ${calldata.slice(0, 120)}`,
+    );
+  }
+  const [a, b, c, pubSignals] = parsed as [
     [string, string],
     [[string, string], [string, string]],
     [string, string],

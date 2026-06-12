@@ -174,7 +174,7 @@ describe('boardLogic', () => {
     }
   });
 
-  it('多船违规时报最小 shipId(单船检查优先于重叠)', () => {
+  it('结构性错误按 shipId 序报告(同为结构性错误时报 shipId 小者)', () => {
     const b = mkBoard([
       { x: 0, y: 0, dir: 0 },
       { x: 7, y: 1, dir: 0 }, // len4 尾 x=10 → OOB,shipId 1
@@ -183,6 +183,28 @@ describe('boardLogic', () => {
       { x: 0, y: 4, dir: 0 },
     ]);
     assert.deepEqual(validateBoard(b), { ok: false, code: 'OOB', shipId: 1 });
+  });
+
+  it('结构性错误优先于 OVERLAP:0/1 号重叠 + 3 号 dir=2 → 报 shipId 3 的 BAD_DIR', () => {
+    const b = mkBoard([
+      { x: 0, y: 0, dir: 0 }, // (0..4, 0)
+      { x: 0, y: 0, dir: 0 }, // 与 0 号完全重叠(shipId 更小,但重叠检查靠后)
+      { x: 0, y: 2, dir: 0 },
+      { x: 0, y: 3, dir: 2 }, // BAD_DIR
+      { x: 0, y: 4, dir: 0 },
+    ]);
+    assert.deepEqual(validateBoard(b), { ok: false, code: 'BAD_DIR', shipId: 3 });
+  });
+
+  it('同一船内 BAD_COORD 优先于 BAD_DIR:x=10 且 dir=2 → BAD_COORD', () => {
+    const b = mkBoard([
+      { x: 10, y: 0, dir: 2 }, // x 越界 + 坏方向同时存在
+      { x: 0, y: 1, dir: 0 },
+      { x: 0, y: 2, dir: 0 },
+      { x: 0, y: 3, dir: 0 },
+      { x: 0, y: 4, dir: 0 },
+    ]);
+    assert.deepEqual(validateBoard(b), { ok: false, code: 'BAD_COORD', shipId: 0 });
   });
 
   it('occupancyGrid:已知布阵逐格断言,总和恒 17', () => {
@@ -208,6 +230,14 @@ describe('boardLogic', () => {
         }
       }
     }
+  });
+
+  it('isHit 域外输入(非整数/负数)→ 0,不得给出语义错误的 1', () => {
+    // boardA 的 0 号船占 (0..4, 0):x=1.5 落在区间内,无守卫时会误判 1
+    assert.equal(isHit(boardA, 1.5, 0), 0);
+    assert.equal(isHit(boardA, -1, 0), 0);
+    assert.equal(isHit(boardB, 1.5, 0), 0);
+    assert.equal(isHit(boardB, -1, 0), 0);
   });
 });
 
@@ -272,6 +302,12 @@ describe('encoding', () => {
       tx: '3',
       ty: '7',
     });
+  });
+
+  it('toShotInputs:tx/ty 非 0–9 整数 → throw(防坏值流入 circom witness)', () => {
+    assert.throws(() => toShotInputs(boardB, 1n, 1.5, 0), /0–9 整数/);
+    assert.throws(() => toShotInputs(boardB, 1n, -1, 0), /0–9 整数/);
+    assert.throws(() => toShotInputs(boardB, 1n, 0, 10), /0–9 整数/);
   });
 });
 

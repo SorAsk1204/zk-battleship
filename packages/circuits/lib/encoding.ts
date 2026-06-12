@@ -7,7 +7,10 @@
 import { poseidon16 } from 'poseidon-lite/poseidon16';
 import type { Board } from './boardLogic.ts';
 
-/** 恰 15 个 bigint:[x0,y0,d0, x1,y1,d1, ..., x4,y4,d4] */
+/**
+ * 恰 15 个 bigint:[x0,y0,d0, x1,y1,d1, ..., x4,y4,d4]
+ * @internal — 仅供 computeCommitment 与电路测试使用;消费方禁止自行拼 Poseidon 输入。
+ */
 export function encodeShipsForHash(b: Board): bigint[] {
   const out: bigint[] = [];
   for (let i = 0; i < 5; i++) {
@@ -16,7 +19,11 @@ export function encodeShipsForHash(b: Board): bigint[] {
   return out;
 }
 
-/** poseidon16([...encodeShipsForHash(b), salt]) */
+/**
+ * poseidon16([...encodeShipsForHash(b), salt])
+ * 前置条件:调用方必须先通过 validateBoard;本函数不校验
+ * (M1 负向测试需要为非法布阵构造输入)。
+ */
 export function computeCommitment(b: Board, salt: bigint): bigint {
   return poseidon16([...encodeShipsForHash(b), salt]);
 }
@@ -29,13 +36,25 @@ export function toBoardInputs(b: Board, salt: bigint): { ships: string[][]; salt
   };
 }
 
-/** circom shot 电路输入:board 输入 + 公开 commitment/tx/ty */
+/**
+ * circom shot 电路输入:board 输入 + 公开 commitment/tx/ty。
+ * 前置条件:调用方必须先通过 validateBoard;本函数不校验布阵
+ * (M1 负向测试需要为非法布阵构造输入)。
+ * tx/ty 必须是 0–9 整数(与 isHit 同域),违反则 throw——
+ * 本函数产出的是 circom 输入,坏值会变成难懂的 witness 错误。
+ */
 export function toShotInputs(
   b: Board,
   salt: bigint,
   tx: number,
   ty: number,
 ): { ships: string[][]; salt: string; commitment: string; tx: string; ty: string } {
+  if (
+    !Number.isInteger(tx) || tx < 0 || tx > 9 ||
+    !Number.isInteger(ty) || ty < 0 || ty > 9
+  ) {
+    throw new Error(`toShotInputs: tx/ty 必须是 0–9 整数,got tx=${tx}, ty=${ty}`);
+  }
   return {
     ...toBoardInputs(b, salt),
     commitment: computeCommitment(b, salt).toString(10),
