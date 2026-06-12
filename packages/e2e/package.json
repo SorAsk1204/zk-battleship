@@ -1,0 +1,20 @@
+{
+  "name": "@zk-battleship/e2e",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "scripts": {
+    "test": "tsx src/run-all.ts"
+  },
+  "dependencies": {
+    "execa": "^9",
+    "tree-kill": "^1.2",
+    "viem": "^2.52"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@zk-battleship/circuits": "workspace:*",
+    "tsx": "^4",
+    "typescript": "~5.9"
+  }
+}
