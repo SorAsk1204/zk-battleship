@@ -7,8 +7,8 @@
  *
  * 运行:pnpm --filter @zk-battleship/contracts run fixtures
  *
- * mtime 缓存:ProofFixtures.sol 比 board.zkey、shot.zkey、本文件都新 ⇒ skipped 直接退出
- * (全量生成 38 个证明约 1 分钟,不缓存的话每次 forge test 都白等)。
+ * mtime 缓存:ProofFixtures.sol 比 board.zkey、shot.zkey、本文件、circuits 的 lib/*.ts
+ * 都新 ⇒ skipped 直接退出(全量生成 38 个证明约 1 分钟,不缓存的话每次 forge test 都白等)。
  */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -78,24 +78,42 @@ const A_WATER: ReadonlyArray<{ x: number; y: number }> = [
 //   合法应答应为 [0, commitmentB, W′x, W′y];本证明是 [0, commitmentB, Wx, Wy]。
 //   W/W′ 都是 B 的水格(result 同为 0)、同棋盘(commitment 同)、同 y(ty 同),
 //   仅 x 不同 ⇒ 恰好只差 pubSignals[2],PROOF_MISMATCH 精确打在坐标绑定 (2) 上。
-const W = { x: 0, y: 0 } as const; // B 的水格(B 在第 0 列只占 y=7..8)
-const W_PRIME = { x: 1, y: 0 } as const; // B 的另一水格,与 W 仅差 x
+// (坐标类型刻意放宽为 number:as const 的字面量类型会让下方 x/y 不等断言触发 TS2367。)
+type Cell = { readonly x: number; readonly y: number };
+const W: Cell = { x: 0, y: 0 }; // B 的水格(B 在第 0 列只占 y=7..8)
+const W_PRIME: Cell = { x: 1, y: 0 }; // B 的另一水格,与 W 仅差 x
+//
+// ty 单偏差素材(Task 1.9 用,无需新证明):W″ 与 W 同列不同行,也是 B 的水格。
+//   活局 pending=(wX, wDoubleY) 时提交 shotBMissAtW(=[0, commitmentB, Wx, Wy]),
+//   与合法应答 [0, commitmentB, Wx, wDoubleY] 恰好只差 pubSignals[3](ty),
+//   PROOF_MISMATCH 精确打在坐标绑定 (2) 的 ty 半边上。
+const W_DPRIME: Cell = { x: W.x, y: 1 };
 //
 // 换棋盘攻击:链上 pending=P(防守方棋盘 B),提交 C 在 P 的 hit 证明(shotCHitAtP)。
 //   P 同时是 B 与 C 的船格 ⇒ 合法应答应为 [1, commitmentB, Px, Py],
 //   本证明是 [1, commitmentC, Px, Py],恰好只差 pubSignals[1],
 //   PROOF_MISMATCH 精确打在承诺绑定 (1) 上(result/tx/ty 全部吻合)。
-const P = { x: 5, y: 0 } as const;
+const P: Cell = { x: 5, y: 0 };
 
 // ============ mtime 缓存 ============
 const SELF = fileURLToPath(import.meta.url);
 const HERE = path.dirname(SELF);
 const OUT_PATH = path.join(HERE, 'ProofFixtures.sol');
 
+// circuits 的 lib 源码同样是 fixture 内容的输入(proof.ts 的 calldata 格式化、
+// encoding.ts 的电路输入编码、node.ts 的产物路径/证明入口,连同 boardLogic 等):
+// 任一改动都可能改变 commitment/pubSignals/calldata,必须触发重新生成,
+// 防"lib 改了但旧 ProofFixtures.sol 仍判 fresh"的陈旧自洽。目录整扫,.ts 全收。
+const CIRCUITS_LIB = path.dirname(fileURLToPath(import.meta.resolve('@zk-battleship/circuits/node')));
+const CIRCUITS_LIB_DEPS = fs
+  .readdirSync(CIRCUITS_LIB)
+  .filter((f) => f.endsWith('.ts'))
+  .map((f) => path.join(CIRCUITS_LIB, f));
+
 function isFresh(): boolean {
   if (!fs.existsSync(OUT_PATH)) return false;
   const outMtime = fs.statSync(OUT_PATH).mtimeMs;
-  const deps = [artifactPaths.board.zkey, artifactPaths.shot.zkey, SELF];
+  const deps = [artifactPaths.board.zkey, artifactPaths.shot.zkey, SELF, ...CIRCUITS_LIB_DEPS];
   return deps.every((d) => fs.statSync(d).mtimeMs < outMtime);
 }
 
@@ -200,7 +218,7 @@ function uintConstFn(name: string, type: 'uint8' | 'uint256', value: string): st
 
 async function main(): Promise<void> {
   if (isFresh()) {
-    console.log('[fixtures] skipped — ProofFixtures.sol 比 board.zkey/shot.zkey/generate.ts 都新');
+    console.log('[fixtures] skipped — ProofFixtures.sol 比 board.zkey/shot.zkey/generate.ts/circuits lib 都新');
     return;
   }
 
@@ -234,6 +252,8 @@ async function main(): Promise<void> {
   assert.equal(isHit(BOARD_B, W.x, W.y), 0, 'W 必须是 B 的水格');
   assert.equal(isHit(BOARD_B, W_PRIME.x, W_PRIME.y), 0, 'W′ 必须是 B 的水格(result 同为 0)');
   assert(W.y === W_PRIME.y && W.x !== W_PRIME.x, 'W/W′ 必须仅 x 不同(恰差 pubSignals[2] 一项)');
+  assert.equal(isHit(BOARD_B, W_DPRIME.x, W_DPRIME.y), 0, 'W″ 必须是 B 的水格(result 同为 0)');
+  assert(W_DPRIME.x === W.x && W_DPRIME.y !== W.y, 'W/W″ 必须仅 y 不同(恰差 pubSignals[3] 一项)');
   assert.equal(isHit(BOARD_C, P.x, P.y), 1, 'P 必须是 C 的船格(本证明 result=1)');
   assert.equal(isHit(BOARD_B, P.x, P.y), 1, 'P 必须同时是 B 的船格(恰差 pubSignals[1] 一项)');
 
@@ -353,6 +373,7 @@ async function main(): Promise<void> {
     uintConstFn('wY', 'uint8', String(W.y)),
     uintConstFn('wPrimeX', 'uint8', String(W_PRIME.x)),
     uintConstFn('wPrimeY', 'uint8', String(W_PRIME.y)),
+    uintConstFn('wDoubleY', 'uint8', String(W_DPRIME.y)),
     uintConstFn('pX', 'uint8', String(P.x)),
     uintConstFn('pY', 'uint8', String(P.y)),
   ];

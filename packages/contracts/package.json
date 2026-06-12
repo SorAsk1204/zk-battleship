@@ -3,8 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "forge build",
-    "fixtures": "tsx test/fixtures/generate.ts",
+    "build": "pnpm run fixtures && forge build",
+    "typecheck": "tsc -p .",
+    "fixtures": "tsc -p . && tsx test/fixtures/generate.ts",
     "test": "pnpm run fixtures && forge test",
     "snapshot": "pnpm run fixtures && forge snapshot"
   },
