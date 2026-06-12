@@ -138,7 +138,9 @@ contract Battleship {
         // 坐标必须在 10x10 棋盘内:防越界坐标污染 shotMap 位图与 shot 电路输入域。
         require(x < 10 && y < 10, "OOB");
         uint8 defender = 1 - g.turn;
-        // 防重复攻击同一格:重复格的应答是确定的,允许重打只会被用来拖时间刷事件。
+        // 防 hits 通胀:无此检查,攻击方可每回合反复轰击同一已知命中格,
+        // 防守方被迫每次应答 result=1(否则超时判负),hits 从单格刷到 17 直接获胜,
+        // 不必击沉全舰队。这条 require 是"17 命中 = 17 个不同船格"语义的唯一守卫。
         require(((g.shotMap[defender] >> (uint256(y) * 10 + uint256(x))) & 1) == 0, "REPEAT");
 
         g.pendingX = x;
@@ -189,6 +191,8 @@ contract Battleship {
             // 17 格全中:同交易直接结束,不换边(§10)。
             g.phase = Phase.Finished;
             g.winner = _player(g, g.turn);
+            // lastActionAt 故意不刷新:Finished 后 claimTimeout 已被 phase 闸死,刷新无观察差异;
+            // 维持"只在产生新行动义务时写"的不变量。
             // TODO(stake): 资金托管挂点 — 结算处:胜者领取双方押金;
             //              claimTimeout 胜者、cancelGame 退款同属此挂点范围(§1.3 范围外)。
             emit GameFinished(gameId, g.winner, "17hits");

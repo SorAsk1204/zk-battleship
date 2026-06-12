@@ -3,6 +3,8 @@
 # (本机 autocrlf=true 时 verification_key.json/manifest.json 会被转 CRLF)。
 # wasm/zkey 虽会被 git 自动识别为二进制,这里一并显式钉死,不赌启发式。
 packages/circuits/artifacts/** -text
-# snarkjs 导出的 verifier 同理钉死 LF:幂等 re-export 验证法(重导出后 git diff 应为空)
-# 依赖字节级一致,autocrlf=true 的 clone 若被转 CRLF,重导出必出假 diff。
-packages/contracts/src/verifiers/*.sol eol=lf
+# 全部 .sol 钉死 LF(不止 verifiers):
+# - verifiers 是 snarkjs 导出物,幂等 re-export 验证法(重导出后 git diff 应为空)
+#   依赖字节级一致,autocrlf=true 的 clone 若被转 CRLF,重导出必出假 diff;
+# - 手写 .sol 在 autocrlf=true 本机会被 CRLF 检出,forge fmt --check 整文件报行尾差异。
+packages/contracts/**/*.sol eol=lf
