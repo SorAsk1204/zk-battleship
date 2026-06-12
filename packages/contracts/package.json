@@ -1,8 +1,18 @@
 {
   "name": "@zk-battleship/contracts",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "forge build",
-    "test": "forge test"
+    "fixtures": "tsx test/fixtures/generate.ts",
+    "test": "pnpm run fixtures && forge test",
+    "snapshot": "pnpm run fixtures && forge snapshot"
+  },
+  "devDependencies": {
+    "@types/node": "^24",
+    "@zk-battleship/circuits": "workspace:*",
+    "snarkjs": "0.7.6",
+    "tsx": "^4",
+    "typescript": "~5.9"
   }
 }
