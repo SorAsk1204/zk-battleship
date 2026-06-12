@@ -1,0 +1,13 @@
+node_modules/
+dist/
+*.log
+# circuits 中间产物(最终 artifacts/ 提交 git)
+packages/circuits/build/
+packages/circuits/ptau/
+# foundry
+packages/contracts/out/
+packages/contracts/cache/
+# 生成物(由脚本按需重建)
+packages/contracts/test/fixtures/ProofFixtures.sol
+packages/web/public/zk/
+packages/web/public/deployment.json

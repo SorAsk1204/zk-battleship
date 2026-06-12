@@ -1,0 +1,9 @@
+{
+  "name": "zk-battleship",
+  "private": true,
+  "packageManager": "pnpm@11.5.3",
+  "scripts": {
+    "test:all": "pnpm --filter @zk-battleship/circuits run test && pnpm --filter @zk-battleship/contracts run test && pnpm --filter @zk-battleship/e2e run test",
+    "demo": "tsx scripts/demo.ts"
+  }
+}
