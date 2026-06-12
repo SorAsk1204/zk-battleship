@@ -9,13 +9,25 @@
   --color-flare: #FF7A45;
   --color-foam: #C8D8DC;
   --color-mist: #5A7484;
+  --radius-*: initial;   /* §7.2 radius ≤4px:rounded-md/lg 必须编译不出来 */
+  --radius-xs: 2px;
+  --radius-sm: 4px;
   --font-display: "Chakra Petch", sans-serif;
-  --font-sans: "Inter", sans-serif;
-  --font-mono: "IBM Plex Mono", monospace;
+  --font-sans: "Inter", "Microsoft YaHei", "PingFang SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "Microsoft YaHei", monospace;
 }
 
 @layer base {
+  :root {
+    color-scheme: dark;
+  }
+
   body {
     @apply bg-abyss font-sans text-foam;
+  }
+
+  ::selection {
+    background: var(--color-phosphor);
+    color: var(--color-abyss);
   }
 }
