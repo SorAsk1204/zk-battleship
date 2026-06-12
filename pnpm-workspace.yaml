@@ -1,2 +1,10 @@
 packages:
   - 'packages/*'
+
+# v11 默认 strictDepBuilds:原生构建脚本须显式放行(见 DECISIONS.md Task 0.1)
+allowBuilds:
+  esbuild: true
+
+# 显式锁定 pnpm 默认布局:circom 编译用 `-l node_modules` 依赖 circomlib
+# 以 junction 形式出现在 packages/circuits/node_modules,改 hoisted 会破坏。
+nodeLinker: isolated

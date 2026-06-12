@@ -11,3 +11,5 @@ packages/contracts/cache/
 packages/contracts/test/fixtures/ProofFixtures.sol
 packages/web/public/zk/
 packages/web/public/deployment.json
+.env
+packages/contracts/broadcast/
