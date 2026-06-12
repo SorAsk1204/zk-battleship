@@ -31,13 +31,26 @@ export const CIRCOM_VERSION = '2.1.9';
 /** 默认电路清单(M1 起为真电路;smoke 只通过显式 argv 传入) */
 export const DEFAULT_CIRCUITS = ['board', 'shot'] as const;
 
-/** 只有这两个电路的产物允许进 contracts/ 与 artifacts/;其余(如 smoke)只活在 build/ */
+/** 只有默认清单里的电路(生产电路)产物允许进 contracts/ 与 artifacts/;其余(如 smoke)只活在 build/ */
 export function isProductionCircuit(name: string): boolean {
-  return name === 'board' || name === 'shot';
+  return (DEFAULT_CIRCUITS as readonly string[]).includes(name);
+}
+
+/** 全部脚本共用的 flag 白名单(目前仅 setup.ts 用到一个) */
+const KNOWN_FLAGS = new Set(['--verify-determinism']);
+
+/** argv 中以 - 开头但不在白名单的一律 fail,防 typo 静默忽略 */
+export function assertKnownFlags(argv: string[] = process.argv.slice(2)): void {
+  for (const a of argv) {
+    if (a.startsWith('-') && !KNOWN_FLAGS.has(a)) {
+      fail(`未知 flag "${a}"(白名单:${[...KNOWN_FLAGS].join(', ')})`);
+    }
+  }
 }
 
 /** argv 里的非 flag 参数作为电路名;无参数时回落默认清单 */
 export function circuitsFromArgv(argv: string[] = process.argv.slice(2)): string[] {
+  assertKnownFlags(argv);
   const names = argv.filter((a) => !a.startsWith('-'));
   for (const n of names) {
     if (!/^[a-z][a-zA-Z0-9_]*$/.test(n)) {
@@ -99,31 +112,50 @@ export type R1csStats = {
  * 注意:两条路默认都会 getCurveFromR 起 bn128 worker,调用方脚本必须 process.exit。
  */
 export async function readR1csStats(r1csPath: string): Promise<R1csStats> {
+  // 五个字段全部校验为有限数:任何一个 NaN/undefined 流入 choosePower 都会算出垃圾 power
+  const STAT_FIELDS = ['nConstraints', 'nPubInputs', 'nPrvInputs', 'nOutputs', 'nVars'] as const;
   const pick = (cir: Record<string, unknown>, via: R1csStats['via']): R1csStats | null => {
+    for (const f of STAT_FIELDS) {
+      const v = cir[f];
+      if (typeof v !== 'number' || !Number.isFinite(v)) return null;
+    }
     const { nConstraints, nPubInputs, nPrvInputs, nOutputs, nVars } = cir as Record<
       string,
       number
     >;
-    if (typeof nConstraints !== 'number' || Number.isNaN(nConstraints)) return null;
     return { nConstraints, nPubInputs, nPrvInputs, nOutputs, nVars, via };
   };
 
+  let snarkjsError: string;
   try {
     const snarkjs = await import('snarkjs');
     const info = (await snarkjs.r1cs.info(r1csPath)) as Record<string, unknown>;
     const stats = pick(info, 'snarkjs.r1cs.info');
     if (stats) return stats;
-  } catch {
-    // 落入 fallback
+    snarkjsError = `返回结构异常(${STAT_FIELDS.join('/')} 存在缺失或非有限数字段)`;
+  } catch (e) {
+    snarkjsError = (e as Error).message;
   }
-  const { readR1cs } = await import('r1csfile');
-  const cir = (await readR1cs(r1csPath, {
-    loadConstraints: false,
-    loadMap: false,
-  })) as Record<string, unknown>;
-  const stats = pick(cir, 'r1csfile.readR1cs');
-  if (!stats) fail(`无法从 ${r1csPath} 读出约束数(snarkjs 与 r1csfile 两条路都失败)`);
-  return stats;
+
+  let r1csfileError: string;
+  try {
+    const { readR1cs } = await import('r1csfile');
+    const cir = (await readR1cs(r1csPath, {
+      loadConstraints: false,
+      loadMap: false,
+    })) as Record<string, unknown>;
+    const stats = pick(cir, 'r1csfile.readR1cs');
+    if (stats) return stats;
+    r1csfileError = `返回结构异常(${STAT_FIELDS.join('/')} 存在缺失或非有限数字段)`;
+  } catch (e) {
+    r1csfileError = (e as Error).message;
+  }
+
+  fail(
+    `无法从 ${r1csPath} 读出约束数,两条路都失败:\n` +
+      `  - snarkjs.r1cs.info: ${snarkjsError}\n` +
+      `  - r1csfile.readR1cs: ${r1csfileError}`,
+  );
 }
 
 /** 判断模块是否被直接执行(tsx scripts/x.ts ...),而非被 build.ts import */

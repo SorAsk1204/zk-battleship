@@ -13,12 +13,14 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import circomTester, { type WasmTester } from 'circom_tester';
 import { poseidon2 } from 'poseidon-lite/poseidon2';
+// compile.ts 有 isDirectRun 守卫,被 import 不会触发编译副作用,可安全引用
+import { compileCircuit } from '../scripts/compile.ts';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SMOKE_BUILD = path.join(PKG_ROOT, 'build', 'smoke');
 
 describe('smoke circuit(证明管线冒烟)', function () {
-  // 首次走 recompile 时 circom 编译可能慢
+  // 首次(产物缺失走 compileCircuit)时 circom 编译可能慢
   this.timeout(120_000);
 
   before(function () {
@@ -34,21 +36,19 @@ describe('smoke circuit(证明管线冒烟)', function () {
   let circuit: WasmTester;
 
   before(async function () {
-    const compiled = fs.existsSync(path.join(SMOKE_BUILD, 'smoke_js', 'smoke.wasm'));
-    if (compiled) {
-      // 主路径:直接吃 compile.ts 产物,验证 M1 真电路测试要走的布局
-      circuit = await circomTester.wasm(path.join(PKG_ROOT, 'smoke.circom'), {
-        output: SMOKE_BUILD,
-        recompile: false,
-      });
+    // build 产物缺失(clean checkout 直接跑 test)时程序化调 compileCircuit 重建,
+    // 而不是 circom_tester 的 recompile:true:这样 fallback 也经过 compile.ts 的
+    // circom 版本断言,且下面的 recompile:false 永远在验证"吃 compile.ts 布局"这条契约。
+    if (fs.existsSync(path.join(SMOKE_BUILD, 'smoke_js', 'smoke.wasm'))) {
+      console.log('[smoke.test] 复用已有 build/smoke 产物(compile.ts 布局)');
     } else {
-      // 兜底:clean checkout 直接跑 test 时自行编译(等价 compile.ts 的 -l node_modules)
-      circuit = await circomTester.wasm(path.join(PKG_ROOT, 'smoke.circom'), {
-        output: SMOKE_BUILD,
-        recompile: true,
-        include: path.join(PKG_ROOT, 'node_modules'),
-      });
+      console.log('[smoke.test] build/smoke 产物缺失,程序化调用 compileCircuit("smoke") 重建');
+      await compileCircuit('smoke');
     }
+    circuit = await circomTester.wasm(path.join(PKG_ROOT, 'smoke.circom'), {
+      output: SMOKE_BUILD,
+      recompile: false,
+    });
   });
 
   it('witness 满足全部约束,输出与 poseidon-lite 对拍一致', async function () {

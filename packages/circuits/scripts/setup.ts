@@ -46,6 +46,17 @@ async function readMeta(file: string): Promise<SetupMeta | null> {
   }
 }
 
+/**
+ * snarkjs 长任务进度日志:newZKey 在 M1 真电路上要跑很久,不给 logger 就全程静默。
+ * 只透传 info/warn/error;debug 是逐约束级噪音,屏蔽。
+ */
+const snarkjsLogger = {
+  info: (msg: string) => console.log(`[snarkjs] ${msg}`),
+  warn: (msg: string) => console.warn(`[snarkjs] ${msg}`),
+  error: (msg: string) => console.error(`[snarkjs] ${msg}`),
+  debug: () => {},
+};
+
 export async function setupCircuit(name: string): Promise<SetupMeta> {
   const p = circuitPaths(name);
   const { ptauPath, power } = await ensurePtau(name); // 内部已校验 r1cs 存在
@@ -74,7 +85,7 @@ export async function setupCircuit(name: string): Promise<SetupMeta> {
   }
 
   console.log(`[setup] ${name}: newZKey (pot${power}, no contribute per D6) ...`);
-  await snarkjs.zKey.newZKey(p.r1cs, ptauPath, p.zkey);
+  await snarkjs.zKey.newZKey(p.r1cs, ptauPath, p.zkey, snarkjsLogger);
   const vkey = await snarkjs.zKey.exportVerificationKey(p.zkey);
   await fs.writeFile(
     p.vkey,
@@ -97,9 +108,9 @@ export async function verifyDeterminism(name: string): Promise<void> {
   const runB = `${p.zkey}.det-b`;
   try {
     console.log(`[determinism] ${name}: newZKey run A ...`);
-    await snarkjs.zKey.newZKey(p.r1cs, ptauPath, runA);
+    await snarkjs.zKey.newZKey(p.r1cs, ptauPath, runA, snarkjsLogger);
     console.log(`[determinism] ${name}: newZKey run B ...`);
-    await snarkjs.zKey.newZKey(p.r1cs, ptauPath, runB);
+    await snarkjs.zKey.newZKey(p.r1cs, ptauPath, runB, snarkjsLogger);
     const [ha, hb] = await Promise.all([sha256File(runA), sha256File(runB)]);
     console.log(`[determinism] run A sha256 = ${ha}`);
     console.log(`[determinism] run B sha256 = ${hb}`);
@@ -111,6 +122,9 @@ export async function verifyDeterminism(name: string): Promise<void> {
     }
     console.log(`[determinism] ${name}: 一致 — D6 成立(snarkjs ${SNARKJS_VERSION})`);
   } finally {
+    // 注意:mismatch 路径走 fail() → process.exit(1),finally 不会执行,
+    // .det-a/.det-b 会留在盘上——这是有意取证(供人工 diff 两份 zkey 定位不确定性来源),
+    // 不是清理遗漏。只有"一致"或 newZKey 自身抛错时才走到这里清理。
     await fs.rm(runA, { force: true });
     await fs.rm(runB, { force: true });
   }

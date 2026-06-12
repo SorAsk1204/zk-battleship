@@ -69,10 +69,12 @@ export async function exportCircuit(name: string): Promise<void> {
   const template = await fs.readFile(TEMPLATE_PATH, 'utf8');
   let sol = await snarkjs.zKey.exportSolidityVerifier(p.zkey, { groth16: template });
   const contractName = `${pascal(name)}Verifier`;
-  if (!sol.includes('contract Groth16Verifier')) {
+  // 必须恰好出现 1 次:0 次没法改名,>1 次说明模板结构变了,replace 只改第一处会产出错误源码
+  if (sol.split('contract Groth16Verifier').length !== 2) {
+    const count = sol.split('contract Groth16Verifier').length - 1;
     fail(
-      `verifier 模板输出里找不到 "contract Groth16Verifier"(snarkjs ${SNARKJS_VERSION} 模板变了?),` +
-        `拒绝盲改名,请人工检查 ${TEMPLATE_PATH}`,
+      `verifier 模板输出里 "contract Groth16Verifier" 出现 ${count} 次,期望恰 1 次` +
+        `(snarkjs ${SNARKJS_VERSION} 模板变了?),拒绝盲改名,请人工检查 ${TEMPLATE_PATH}`,
     );
   }
   sol = sol.replace('contract Groth16Verifier', `contract ${contractName}`);
@@ -106,16 +108,40 @@ export async function exportCircuit(name: string): Promise<void> {
   console.log(`[export] ${name}: artifacts -> ${outDir}`);
 
   // 3) manifest.json(合并更新,保留其他电路条目)
+  // 读取纪律:仅 ENOENT 视为首次生成;JSON 坏掉或缺 circuits 字段一律 fail 交人工——
+  // 静默重置会把其他电路条目丢掉,违反 D5 的 manifest 原子配套纪律。
   const meta = JSON.parse(await fs.readFile(p.setupMeta, 'utf8')) as SetupMeta;
   let manifest: Manifest = {
     circomVersion: CIRCOM_VERSION,
     snarkjsVersion: SNARKJS_VERSION,
     circuits: {},
   };
+  let raw: string | null = null;
   try {
-    manifest = JSON.parse(await fs.readFile(MANIFEST_PATH, 'utf8')) as Manifest;
-  } catch {
-    // 首次生成
+    raw = await fs.readFile(MANIFEST_PATH, 'utf8');
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== 'ENOENT') {
+      fail(`读取 ${MANIFEST_PATH} 失败(非 ENOENT):${(e as Error).message},请人工检查`);
+    }
+    // ENOENT → 首次生成,用上面的空 manifest
+  }
+  if (raw !== null) {
+    let parsed: Manifest;
+    try {
+      parsed = JSON.parse(raw) as Manifest;
+    } catch (e) {
+      fail(
+        `${MANIFEST_PATH} JSON 解析失败:${(e as Error).message}\n` +
+          `拒绝静默重置(会丢其他电路条目),请人工修复;确认无需保留可手动删除后重跑。`,
+      );
+    }
+    if (typeof parsed.circuits !== 'object' || parsed.circuits === null) {
+      fail(
+        `${MANIFEST_PATH} 缺 circuits 字段(结构损坏)。\n` +
+          `拒绝静默重置(会丢其他电路条目),请人工修复;确认无需保留可手动删除后重跑。`,
+      );
+    }
+    manifest = parsed;
   }
   manifest.circomVersion = CIRCOM_VERSION;
   manifest.snarkjsVersion = SNARKJS_VERSION;
@@ -124,7 +150,10 @@ export async function exportCircuit(name: string): Promise<void> {
     ptauPower: meta.ptauPower,
     files,
   };
-  await fs.writeFile(MANIFEST_PATH, JSON.stringify(manifest, null, 2));
+  // 写入原子化:先 tmp 再 rename,防写一半被打断留下损坏 manifest(读取侧会 fail 交人工)
+  const manifestTmp = `${MANIFEST_PATH}.tmp`;
+  await fs.writeFile(manifestTmp, JSON.stringify(manifest, null, 2));
+  await fs.rename(manifestTmp, MANIFEST_PATH);
   console.log(`[export] ${name}: manifest -> ${MANIFEST_PATH}`);
 }
 

@@ -6,7 +6,9 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { ARTIFACTS_DIR, REPO_ROOT } from './common.ts';
+import { ARTIFACTS_DIR, REPO_ROOT, assertKnownFlags } from './common.ts';
+
+assertKnownFlags();
 
 const DEST = path.join(REPO_ROOT, 'packages', 'web', 'public', 'zk');
 
@@ -18,6 +20,8 @@ if (entries.length === 0) {
   process.exit(0);
 }
 
+// 先清空 DEST 再整体 cp:防 artifacts/ 里已删除的电路在 web 静态目录残留孤儿文件
+await fs.rm(DEST, { recursive: true, force: true });
 await fs.mkdir(DEST, { recursive: true });
 await fs.cp(ARTIFACTS_DIR, DEST, { recursive: true });
 console.log(`[sync-web] ${ARTIFACTS_DIR} -> ${DEST} (${entries.join(', ')})`);
