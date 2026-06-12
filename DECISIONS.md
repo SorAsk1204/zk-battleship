@@ -50,3 +50,11 @@ pnpm 11 起 .npmrc 仅承载 auth/registry;node-linker 等全部配置改在 pnp
 ### 2026-06-12 Task 0.2 — D2 的"双入口"实际落地为三入口(新增 `./proof`)
 
 D2 裁决写的是双入口(`"."` 浏览器安全 + `"./node"` Node 专用),实际落地为**三入口**,新增 `./proof` 承载 `formatProofCalldata`。理由:该函数依赖 snarkjs(`groth16.exportSolidityCallData`),而 snarkjs 不能进 `.`(会被拖进浏览器主线程 bundle,违反 D2 的浏览器安全纪律);同时 D3 要求 formatProofCalldata 全仓唯一实现且被 web/e2e re-export——web 端必须能引到它,故不能塞进 `./node`(那会连带 fullProve/artifactPaths 的 Node 依赖),只能独立成 `./proof` 入口。
+
+### 2026-06-12 Task 0.3 — D6 确定性已实证(smoke,snarkjs 0.7.6)
+
+对 smoke 电路(240 约束,pot12)同一 r1cs + 同一 ptau 连续两次 `zKey.newZKey`(无 contribute),两份 zkey 的 sha256 完全一致(`2d5501fe02637669db492032b31366b9250466ba0e194b68d9af9bda79bf3e9d`)。D6 的确定性假设成立,D5「artifacts/ 提交 git」策略维持。实证入口固化为 `scripts/setup.ts <name> --verify-determinism`,M1 真电路(board/shot)setup 时应重跑复核。顺带实测:circom 2.1.9 重编译同一源文件产出的 r1cs 也逐字节一致(setup 的 r1cs-hash 幂等跳过被触发)。
+
+### 2026-06-12 Task 0.3 — ptau power 选择公式按 snarkjs 真实要求修正
+
+计划写的公式 `power = max(12, ceil(log2(nConstraints)))` 在 nConstraints 恰为 2 的幂等边界会少选 1:snarkjs 0.7.6 `zkey_new.js` 的硬性要求是 `cirPower = floor(log2(nConstraints + nPubInputs + nOutputs)) + 1` 且 ptau power ≥ cirPower(否则报 "circuit too big")。`scripts/ptau.ts` 实际取 `max(12, cirPower)`,该值恒 ≥ 计划公式,语义不变只堵边界。另设 pot20 下载上限保险(board 止损线 50k 约束按理 pot16/17 封顶)。

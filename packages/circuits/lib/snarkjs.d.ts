@@ -16,4 +16,8 @@ declare module 'snarkjs' {
     exportVerificationKey(zkeyFile: string): Promise<unknown>;
     exportSolidityVerifier(zkeyFile: string, templates: Record<string, string>): Promise<string>;
   };
+  export const r1cs: {
+    /** 0.7.6 实测:返回 r1csfile.readR1cs 的完整结构(nConstraints 等),logger 仅控制日志输出 */
+    info(r1csFile: string, logger?: unknown): Promise<unknown>;
+  };
 }

@@ -9,7 +9,13 @@
     "./node": "./lib/node.ts"
   },
   "scripts": {
-    "test": "mocha --import=tsx --timeout 120000 --exit \"test/**/*.test.ts\""
+    "test": "mocha --import=tsx --timeout 120000 --exit \"test/**/*.test.ts\"",
+    "compile": "tsx scripts/compile.ts",
+    "ptau": "tsx scripts/ptau.ts",
+    "setup": "tsx scripts/setup.ts",
+    "export": "tsx scripts/export.ts",
+    "build": "tsx scripts/build.ts",
+    "sync:web": "tsx scripts/sync-web.ts"
   },
   "dependencies": {
     "circomlib": "2.0.5",
