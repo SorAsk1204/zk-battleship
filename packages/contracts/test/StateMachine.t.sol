@@ -180,6 +180,8 @@ contract StateMachineTest is BattleshipHarness {
         game.createGame(ProofFixtures.commitmentB(), ProofFixtures.boardA());
 
         // BAD_PROOF:承诺正确但证明被篡改(verifier 返回 false 不 revert,靠 require 拦)
+        // gas 报告里本用例 ~1.02B gas 属预期:篡改后的点不在 bn254 曲线上 ⇒ 配对预编译失败,
+        // 按 EIP-196/197 语义吞掉全部转发 gas;非 bug 非死循环(同 BindingAttacks 用例 5)。
         BoardProof memory p = ProofFixtures.boardA();
         p.a[0] += 1;
         vm.prank(p0);
@@ -208,6 +210,8 @@ contract StateMachineTest is BattleshipHarness {
         game.joinGame(id, ProofFixtures.commitmentC(), ProofFixtures.boardB());
 
         // BAD_PROOF:承诺正确但证明被篡改
+        // gas 报告里本用例 ~1.02B gas 属预期:篡改后的点不在 bn254 曲线上 ⇒ 配对预编译失败,
+        // 按 EIP-196/197 语义吞掉全部转发 gas;非 bug 非死循环(同 BindingAttacks 用例 5)。
         BoardProof memory p = ProofFixtures.boardB();
         p.a[0] += 1;
         vm.prank(p1);

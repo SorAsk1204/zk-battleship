@@ -7,7 +7,7 @@
     "typecheck": "tsc -p .",
     "fixtures": "tsc -p . && tsx test/fixtures/generate.ts",
     "test": "pnpm run fixtures && forge test",
-    "snapshot": "pnpm run fixtures && forge snapshot"
+    "snapshot": "pnpm run fixtures && forge snapshot --match-contract GasTest"
   },
   "devDependencies": {
     "@types/node": "^24",

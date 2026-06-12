@@ -37,6 +37,8 @@ contract InvariantsTest is BattleshipHarness {
             // 回合边界观察点只允许 AwaitingAttack / Finished,且 Finished 是吸收态(单向)
             bool finished = g.phase == Battleship.Phase.Finished;
             assertTrue(finished || g.phase == Battleship.Phase.AwaitingAttack, "phase at round boundary");
+            // 早终局防御断言:固定剧本恰在 r==17 才终局,此分支正常不会进入;
+            // 若剧本/合约异常导致提前 Finished,单向性检查仍生效而非被静默跳过。
             if (sawFinished) assertTrue(finished, "Finished is terminal: no phase after it");
             sawFinished = sawFinished || finished;
 

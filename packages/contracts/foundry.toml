@@ -6,7 +6,8 @@ libs = ["lib"]
 test = "test"
 ffi = false
 fs_permissions = []
-# 本地 demo;gas snapshot 仅记录。要开优化器须在 M1 .gas-snapshot 落库前决定。
+# 本地 demo;gas snapshot 仅记录。Task 1.11 裁决:维持 false,.gas-snapshot 基于
+# 无优化器字节码落库;后续若开优化器属六操作数字全量重置,须同 commit 重交 .gas-snapshot。
 optimizer = false
 # 钉死当前 forge 默认值,防 forge 升级后 evm 版本漂移导致字节码/gas 变化。
 evm_version = "prague"

@@ -85,3 +85,20 @@ D6 确定性按 Task 0.3 约定对真电路重跑复核:board 与 shot 各双跑
 同任务落地的上任务评审遗留:artifacts 路径单一真理源收口(export.ts 直接 import lib/node.ts 的 artifactPaths 作拷贝目标,artifactPaths 新增 vkey 字段,shot.test.ts 的 VKEY 重推导改用之);shot.circom 注释编号与 Design §5.3 对齐(Num2Bits/ValidShip 改标「防御性检查 A/B(Design 未编号)」);S5–S7 新增陈旧性断言(setup-meta.json 的 r1csSha256 vs 当前 build/shot/shot.r1cs,不一致即 fail 提示重跑 setup,防在陈旧 zkey 上跑出误导结论)。
 
 新增 `.gitattributes`:`packages/circuits/artifacts/** -text`。本机 autocrlf=true,不钉死的话 verification_key.json/manifest.json 在 checkout 时会被转 CRLF,manifest 记录的 sha256 在新 clone 上对不上号——artifacts 必须字节级还原,manifest 哈希才有意义(已验证 index blob sha == 磁盘 sha == manifest 条目)。
+
+### 2026-06-13 Task 1.7 补记 — fixture 可复现性边界与 snarkjs devDep
+
+补记 Task 1.7 落地时的两条执行期决策(此前只写在 generate.ts 注释里,未入本档):
+
+(a) **可复现性边界**:fixture 用固定棋盘 A/B/C + 固定 salt ⇒ commitment 与全部 pubSignals 跨次生成**恒定**,测试可当常量断言;但 Groth16 证明点 a/b/c 含 prover 随机数 r/s,**每次生成都不同**(恒为同一组公开输入的有效证明)。可复现的是"证明陈述的命题",不是证明字节——这正是 gas snapshot 无容差门禁的根因(见 Task 1.11)。固定 salt 仅限测试 fixture,生产严禁(§5.1:承诺隐藏性完全依赖 salt 熵,可预测则 17 格布阵可被字典攻击还原)。
+
+(b) **snarkjs 进 contracts devDependencies(精确锁 0.7.6)**:D1 全仓钉版纪律在本包的落点;用途仅 generate.ts 的 groth16.verify 生成期抽查(防"格式化层正确但证明本身坏"的盲区),证明生成本身走 `@zk-battleship/circuits/node` 真理源,不在本包重复实现。
+
+### 2026-06-13 Task 1.11 — gas snapshot 范围限定
+
+`.gas-snapshot` 只含 GasTest 六关键操作(createGame / joinGame / attack / respondMiss / respondHit / respondFinal17thHit),snapshot script 锁 `forge snapshot --match-contract GasTest`;每个测试体只含被计量的那一笔调用,前置编排全部在 setUp,数字即单笔操作 gas。范围外排除两类污染源:
+
+- StateMachine 两个篡改用例与 BindingAttacks 用例 5 的 **~1.02B gas 是 bn254 预编译失败语义**(篡改点不在曲线上 ⇒ 配对预编译按 EIP-196/197 吞掉全部转发 gas),非 bug 非死循环,但作为"操作成本"毫无意义;
+- Invariants / 全局回放类测试 8–9M gas 是 33 次真证明验证的**累计值**,不代表任何单笔操作。
+
+无容差门禁维持规划期裁决:proof 字节含 prover 随机数(见 Task 1.7 补记),fixture 重新生成后 calldata 非零字节数变化,gas 天然抖动,只记录、靠人审 diff。配套裁决:foundry.toml `optimizer = false` 维持,.gas-snapshot 基于无优化器字节码落库;后续若开优化器属六数字全量重置,须同 commit 重交 .gas-snapshot。

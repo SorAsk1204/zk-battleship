@@ -51,6 +51,8 @@ contract TimeoutTest is BattleshipHarness {
 
     /// 用例 3(§4.3):每次合法状态推进都刷新 lastActionAt —— attack/respond 都把计时锚点拉到当下。
     function test_timerRefreshedByEveryAction() public {
+        // 守卫:下方 +200/+400 的偏移设计依赖 TIMEOUT==300(200<300<400);常量改了先在这里爆
+        assertEq(game.TIMEOUT(), 300, "offsets below assume TIMEOUT=300");
         uint256 id = createAndJoin();
         uint256 t0 = game.getGame(id).lastActionAt; // join 时刻
 
