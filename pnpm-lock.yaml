@@ -8,9 +8,21 @@ importers:
 
   .:
     devDependencies:
+      '@types/node':
+        specifier: ^24
+        version: 24.13.2
+      execa:
+        specifier: ^9
+        version: 9.6.1
+      tree-kill:
+        specifier: ^1.2
+        version: 1.2.2
       tsx:
         specifier: ^4
         version: 4.22.4
+      typescript:
+        specifier: ~5.9
+        version: 5.9.3
 
   packages/circuits:
     dependencies:

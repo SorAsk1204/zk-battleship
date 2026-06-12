@@ -1,6 +1,7 @@
 {
   "name": "zk-battleship",
   "private": true,
+  "type": "module",
   "packageManager": "pnpm@11.5.3",
   "engines": {
     "node": ">=22"
@@ -10,6 +11,10 @@
     "demo": "tsx scripts/demo.ts"
   },
   "devDependencies": {
-    "tsx": "^4"
+    "@types/node": "^24",
+    "execa": "^9",
+    "tree-kill": "^1.2",
+    "tsx": "^4",
+    "typescript": "~5.9"
   }
 }

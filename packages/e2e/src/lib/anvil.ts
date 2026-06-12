@@ -6,6 +6,9 @@
  *   tree-kill 是异步回调,promisify 后 await,保证调用方在 process.exit 前真正杀完。
  * - 另挂 process 'exit'/'SIGINT' 兜底('exit' 回调只能同步,用 child.kill 直杀——
  *   anvil 无子进程,直杀顶层即可),防脚本异常退出后 anvil 残留占端口。
+ * - SIGINT 兜底会 process.exit(130),先注册先执行,会抢跑调用方之后注册的清理逻辑。
+ *   e2e 脚本(短命、无其他子进程)依赖它,保持默认开;长驻调用方(scripts/demo.ts
+ *   还要清理 web dev 子进程树)传 { registerSigint: false } 自管 SIGINT。
  */
 import { execa } from 'execa';
 import treeKill from 'tree-kill';
@@ -16,7 +19,11 @@ const READY_TIMEOUT_MS = 15_000;
 const POLL_INTERVAL_MS = 200;
 const TAIL_LINES = 20;
 
-export async function startAnvil(port = 8546): Promise<AnvilHandle> {
+export async function startAnvil(
+  port = 8546,
+  opts: { registerSigint?: boolean } = {},
+): Promise<AnvilHandle> {
+  const { registerSigint = true } = opts;
   const rpcUrl = `http://127.0.0.1:${port}`;
   const child = execa(
     'anvil',
@@ -59,7 +66,7 @@ export async function startAnvil(port = 8546): Promise<AnvilHandle> {
     process.exit(130);
   };
   process.on('exit', hardKill);
-  process.on('SIGINT', onSignal);
+  if (registerSigint) process.on('SIGINT', onSignal);
 
   const stop = async (): Promise<void> => {
     if (stopped) return;
