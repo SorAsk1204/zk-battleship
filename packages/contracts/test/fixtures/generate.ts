@@ -109,6 +109,9 @@ const CIRCUITS_LIB_DEPS = fs
   .readdirSync(CIRCUITS_LIB)
   .filter((f) => f.endsWith('.ts'))
   .map((f) => path.join(CIRCUITS_LIB, f));
+// 守卫:扫描结果为空说明 exports 重映射后这里指向了错误目录(如指到编译产物 dist),
+// mtime 缓存会静默丢掉 circuits lib 这组依赖的覆盖,陈旧 fixture 永远判 fresh。
+assert(CIRCUITS_LIB_DEPS.length > 0, `CIRCUITS_LIB_DEPS 扫描为空:${CIRCUITS_LIB} 下没有 .ts 源文件`);
 
 function isFresh(): boolean {
   if (!fs.existsSync(OUT_PATH)) return false;

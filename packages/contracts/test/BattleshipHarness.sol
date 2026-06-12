@@ -14,6 +14,8 @@ import {ProofFixtures} from "./fixtures/ProofFixtures.sol";
 ///      P0 持棋盘 A,P1 持棋盘 B;P0 专攻 B 的 17 个船格(P1 以 shotBHit(i) 应答 hit),
 ///      P1 专攻 A 的 16 个固定水格(P0 以 shotAMiss(i) 应答 miss)。
 ///      打满则 P0 第 17 hit 时同交易终局获胜(33 次 ShotFired/ShotResolved)。
+///      同一 gameId 上手动落子后不要再调 playRounds(roundsPlayed 不感知手动步,会撞 REPEAT);
+///      要么全手动要么全 helper。
 abstract contract BattleshipHarness is Test {
     Battleship internal game;
     BoardVerifier internal boardVerifier;
