@@ -7,6 +7,11 @@
  * 从 @zk-battleship/circuits(exports 指向 TS 源)拿 validateBoard 跑一个合法布阵。
  * 这验证了 "tsx 下跨包解析 workspace TS 源" 这条 M2 关键依赖路径,
  * 也是风险表里 "Vite 消费 workspace TS 源" 的 Node 侧前哨。
+ *
+ * M2 实现者注意:execa 9 + Node ≥22 在 Windows 上不能裸 spawn `.cmd` shim
+ * (如 `execa('tsx', ...)` 会 EINVAL,CVE-2024-27980 防护);场景子进程用
+ * `execaNode(script, {nodeOptions: ['--import', 'tsx']})` 或 `process.execPath`;
+ * anvil.exe/forge.exe 等真 exe 不受影响。
  */
 import assert from 'node:assert/strict';
 
