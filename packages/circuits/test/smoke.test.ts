@@ -7,7 +7,6 @@
  *    (<output>/<name>_js/<name>.wasm + .sym + .r1cs)—— M1 板电路测试依赖同一路径;
  * 3. witness 通过约束,且 Poseidon(2) 输出与 poseidon-lite 三方对拍一致。
  */
-import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -15,6 +14,7 @@ import circomTester, { type WasmTester } from 'circom_tester';
 import { poseidon2 } from 'poseidon-lite/poseidon2';
 // compile.ts 有 isDirectRun 守卫,被 import 不会触发编译副作用,可安全引用
 import { compileCircuit } from '../scripts/compile.ts';
+import { P_MINUS_1, assertNoSpaceInPaths } from './helpers.ts';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SMOKE_BUILD = path.join(PKG_ROOT, 'build', 'smoke');
@@ -24,13 +24,7 @@ describe('smoke circuit(证明管线冒烟)', function () {
   this.timeout(120_000);
 
   before(function () {
-    for (const p of [PKG_ROOT, process.cwd()]) {
-      assert.ok(
-        !p.includes(' '),
-        `路径含空格:"${p}"。circom_tester 内部用字符串拼接 exec circom 且不加引号,` +
-          `仓库必须放在无空格路径下(DECISIONS.md Windows 纪律 #1)。`,
-      );
-    }
+    assertNoSpaceInPaths([PKG_ROOT, process.cwd()]);
   });
 
   let circuit: WasmTester;
@@ -61,7 +55,7 @@ describe('smoke circuit(证明管线冒烟)', function () {
 
   it('换一组输入仍一致(防"恰好撞对"假阳性)', async function () {
     const a = 0n;
-    const b = 21888242871839275222246405745257275088548364400416034343698204186575808495616n; // p-1
+    const b = P_MINUS_1;
     const witness = await circuit.calculateWitness({ a, b }, true);
     await circuit.checkConstraints(witness);
     await circuit.assertOut(witness, { h: poseidon2([a, b]) });

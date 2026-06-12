@@ -27,31 +27,15 @@ import {
   type ValidateResult,
 } from '../lib/index.ts';
 // compile.ts 有 isDirectRun 守卫,被 import 不会触发编译副作用
-import { compileCircuit } from '../scripts/compile.ts';
-import { circuitPaths, readR1csStats } from '../scripts/common.ts';
+import { BOARD_CONSTRAINT_LIMIT, compileCircuit } from '../scripts/compile.ts';
+import { circuitPaths, readR1csStatsThrows } from '../scripts/common.ts';
+import { LEGAL_BOARD, P_MINUS_1, SALT, assertNoSpaceInPaths, mkBoard } from './helpers.ts';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BOARD_BUILD = path.join(PKG_ROOT, 'build', 'board');
-/** board 电路约束数止损线(Design §2,与 compile.ts 同值) */
-const BOARD_CONSTRAINT_LIMIT = 50_000;
-/** BN254 标量域素数 p;p-1 即 -1 的域表示,用于 B6 比较器健全性专测 */
-const P_MINUS_1 = 21888242871839275222246405745257275088548364400416034343698204186575808495616n;
-
-/** 造 Board 的辅助:故意收 number,便于构造非法值(dir=2、x=10 等) */
-function mkBoard(ships: Array<{ x: number; y: number; dir: number }>): Board {
-  return ships as unknown as Board;
-}
 
 // ── 布阵素材 ────────────────────────────────────────────────────────────────
-// 合法主力布阵:横竖混合、坐标各异(15 个编码槽位大多不同,能暴露顺序写错)
-const legalBoard: Board = mkBoard([
-  { x: 9, y: 0, dir: 1 }, // len5: (9, 0..4)
-  { x: 0, y: 9, dir: 0 }, // len4: (0..3, 9)
-  { x: 5, y: 9, dir: 0 }, // len3: (5..7, 9)
-  { x: 0, y: 0, dir: 1 }, // len3: (0, 0..2)
-  { x: 8, y: 8, dir: 1 }, // len2: (8, 8..9) 尾格恰 y=9
-]);
-
+// 合法主力布阵 LEGAL_BOARD 与 mkBoard/SALT/P_MINUS_1 在 test/helpers.ts(shot 测试共用)。
 // B3–B7 负向用例的合法基底(逐行横船,互不重叠、全界内);corrupt() 替换其中一船
 const BASE: Array<{ x: number; y: number; dir: number }> = [
   { x: 0, y: 0, dir: 0 }, // len5: (0..4, 0)
@@ -66,19 +50,11 @@ function corrupt(shipId: number, bad: { x: number; y: number; dir: number }): Bo
   return mkBoard(ships);
 }
 
-const SALT = 0x0123456789abcdef0123456789abcdefn; // 128bit 固定测试 salt
-
 describe('board circuit(B1–B9 开局合法性)', function () {
   this.timeout(120_000);
 
   before(function () {
-    for (const p of [PKG_ROOT, process.cwd()]) {
-      assert.ok(
-        !p.includes(' '),
-        `路径含空格:"${p}"。circom_tester 内部用字符串拼接 exec circom 且不加引号,` +
-          `仓库必须放在无空格路径下(DECISIONS.md Windows 纪律 #1)。`,
-      );
-    }
+    assertNoSpaceInPaths([PKG_ROOT, process.cwd()]);
   });
 
   let circuit: WasmTester;
@@ -126,12 +102,12 @@ describe('board circuit(B1–B9 开局合法性)', function () {
   }
 
   it('B1 合法布阵:witness 通过,commitment 与 lib(poseidon-lite)+ circomlibjs 三方一致', async function () {
-    const witness = await witnessFor(legalBoard, SALT);
-    const expected = computeCommitment(legalBoard, SALT); // poseidon-lite 真理源
+    const witness = await witnessFor(LEGAL_BOARD, SALT);
+    const expected = computeCommitment(LEGAL_BOARD, SALT); // poseidon-lite 真理源
     await circuit.assertOut(witness, { commitment: expected });
     // 三方互证:circomlibjs 独立实现同 16 输入(模式照 lib.test.ts)
     const poseidon = await buildPoseidon();
-    const inputs = [...encodeShipsForHash(legalBoard), SALT];
+    const inputs = [...encodeShipsForHash(LEGAL_BOARD), SALT];
     assert.equal(inputs.length, 16);
     assert.equal(poseidon.F.toObject(poseidon(inputs)), expected);
   });
@@ -272,12 +248,12 @@ describe('board circuit(B1–B9 开局合法性)', function () {
 
   it('B8 不同 salt → 不同 commitment;同输入两次 → 相同(确定性)', async function () {
     const salt2 = SALT + 1n;
-    const w1 = await witnessFor(legalBoard, SALT);
-    const w2 = await witnessFor(legalBoard, salt2);
-    const w3 = await witnessFor(legalBoard, SALT);
+    const w1 = await witnessFor(LEGAL_BOARD, SALT);
+    const w2 = await witnessFor(LEGAL_BOARD, salt2);
+    const w3 = await witnessFor(LEGAL_BOARD, SALT);
     // 各自钉死到 lib 真理源(顺带证明电路输出确实随 salt 变化、且可复现)
-    const c1 = computeCommitment(legalBoard, SALT);
-    const c2 = computeCommitment(legalBoard, salt2);
+    const c1 = computeCommitment(LEGAL_BOARD, SALT);
+    const c2 = computeCommitment(LEGAL_BOARD, salt2);
     await circuit.assertOut(w1, { commitment: c1 });
     await circuit.assertOut(w2, { commitment: c2 });
     await circuit.assertOut(w3, { commitment: c1 });
@@ -288,7 +264,7 @@ describe('board circuit(B1–B9 开局合法性)', function () {
   });
 
   it('B9 约束数守门:nConstraints ≤ 50000(Design §2 止损线)', async function () {
-    const stats = await readR1csStats(circuitPaths('board').r1cs);
+    const stats = await readR1csStatsThrows(circuitPaths('board').r1cs);
     console.log(`[board.test] board 实际约束数:${stats.nConstraints}(via ${stats.via})`);
     assert.ok(
       stats.nConstraints <= BOARD_CONSTRAINT_LIMIT,

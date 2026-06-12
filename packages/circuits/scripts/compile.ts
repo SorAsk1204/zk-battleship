@@ -7,7 +7,7 @@
  *
  * 守门:
  * - circom --version 必须是 2.1.9(防工具链漂移导致 zkey/verifier 不可复现);
- * - board 电路约束数 >50000 直接报错停下(Design §2 止损线)。
+ * - board/shot 电路约束数超过 Design §2 止损线直接报错停下。
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -22,8 +22,15 @@ import {
   readR1csStats,
 } from './common.ts';
 
-/** board 电路约束数止损线(Design §2) */
-const BOARD_CONSTRAINT_LIMIT = 50_000;
+/** board 电路约束数止损线(Design §2:~2 万–5 万);test/board.test.ts B9 同源 import */
+export const BOARD_CONSTRAINT_LIMIT = 50_000;
+/** shot 电路约束数止损线(Design §2:~3 千–8 千);test/shot.test.ts 守门同源 import */
+export const SHOT_CONSTRAINT_LIMIT = 8_000;
+/** 编译期守门用的止损线表;不在表里的电路(如 smoke)不设限 */
+const CONSTRAINT_LIMITS: Record<string, number> = {
+  board: BOARD_CONSTRAINT_LIMIT,
+  shot: SHOT_CONSTRAINT_LIMIT,
+};
 
 async function assertCircomVersion(): Promise<void> {
   let stdout: string;
@@ -70,9 +77,10 @@ export async function compileCircuit(name: string): Promise<{ nConstraints: numb
       `${stats.nOutputs} outputs (via ${stats.via})`,
   );
 
-  if (name === 'board' && stats.nConstraints > BOARD_CONSTRAINT_LIMIT) {
+  const limit = CONSTRAINT_LIMITS[name];
+  if (limit !== undefined && stats.nConstraints > limit) {
     fail(
-      `board 电路约束数 ${stats.nConstraints} 超过止损线 ${BOARD_CONSTRAINT_LIMIT}(Design §2)。` +
+      `${name} 电路约束数 ${stats.nConstraints} 超过止损线 ${limit}(Design §2)。` +
         `停下,先回 Design 评审电路结构,不要硬上更大的 ptau。`,
     );
   }

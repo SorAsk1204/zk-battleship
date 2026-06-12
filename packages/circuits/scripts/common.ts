@@ -107,11 +107,13 @@ export type R1csStats = {
 };
 
 /**
- * 读 r1cs 头部统计。优先 snarkjs.r1cs.info(实测 0.7.6 返回 readR1cs 的完整结构,
- * 不只打日志);若返回结构异常,fallback 直接用 r1csfile(snarkjs 的依赖)。
- * 注意:两条路默认都会 getCurveFromR 起 bn128 worker,调用方脚本必须 process.exit。
+ * 读 r1cs 头部统计(抛错版,测试用)。优先 snarkjs.r1cs.info(实测 0.7.6 返回
+ * readR1cs 的完整结构,不只打日志);若返回结构异常,fallback 直接用 r1csfile
+ * (snarkjs 的依赖)。两条路都失败时 throw —— mocha 能正常报告失败,而不是
+ * 整个进程被 process.exit 掐掉。
+ * 注意:两条路默认都会 getCurveFromR 起 bn128 worker,CLI 调用方脚本必须 process.exit。
  */
-export async function readR1csStats(r1csPath: string): Promise<R1csStats> {
+export async function readR1csStatsThrows(r1csPath: string): Promise<R1csStats> {
   // 五个字段全部校验为有限数:任何一个 NaN/undefined 流入 choosePower 都会算出垃圾 power
   const STAT_FIELDS = ['nConstraints', 'nPubInputs', 'nPrvInputs', 'nOutputs', 'nVars'] as const;
   const pick = (cir: Record<string, unknown>, via: R1csStats['via']): R1csStats | null => {
@@ -151,11 +153,20 @@ export async function readR1csStats(r1csPath: string): Promise<R1csStats> {
     r1csfileError = (e as Error).message;
   }
 
-  fail(
+  throw new Error(
     `无法从 ${r1csPath} 读出约束数,两条路都失败:\n` +
       `  - snarkjs.r1cs.info: ${snarkjsError}\n` +
       `  - r1csfile.readR1cs: ${r1csfileError}`,
   );
+}
+
+/** 读 r1cs 头部统计(CLI 版):失败走 fail() 非零退出,脚本入口用;测试请用 readR1csStatsThrows */
+export async function readR1csStats(r1csPath: string): Promise<R1csStats> {
+  try {
+    return await readR1csStatsThrows(r1csPath);
+  } catch (e) {
+    fail((e as Error).message);
+  }
 }
 
 /** 判断模块是否被直接执行(tsx scripts/x.ts ...),而非被 build.ts import */
