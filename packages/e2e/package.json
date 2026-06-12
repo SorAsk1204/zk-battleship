@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "test": "tsx src/run-all.ts",
-    "e2e:a": "tsx src/a-full-game.ts"
+    "e2e:a": "tsx src/a-full-game.ts",
+    "e2e:b": "tsx src/b-timeout.ts",
+    "e2e:c": "tsx src/c-cancel.ts"
   },
   "dependencies": {
     "execa": "^9",

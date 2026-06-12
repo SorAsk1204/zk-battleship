@@ -26,8 +26,8 @@ import {
   saltB,
 } from './lib/boards.ts';
 import { deployAll } from './lib/deploy.ts';
-
-const PHASE_FINISHED = 4; // enum Phase { None, Created, AwaitingAttack, AwaitingResponse, Finished, Cancelled }
+import { Phase } from './lib/phases.ts';
+import { makeSender } from './lib/tx.ts';
 
 const t0 = Date.now();
 const elapsed = (): string => `${((Date.now() - t0) / 1000).toFixed(1)}s`;
@@ -46,31 +46,8 @@ try {
   const p1 = makeClients(rpcUrl, ANVIL_KEYS[1]);
   const publicClient = p0.publicClient;
 
-  // eth_estimateGas 的坑(实测 flake,gasUsed==gasLimit 的 OOG revert):
-  // 估算在 pending 块上下文跑,其时间戳常与上一块同秒,此时 `lastActionAt = block.timestamp`
-  // 的 SSTORE 被当"同值写"(100 gas)估入;真实交易若落到下一秒,同一写变"变值写"(~2900 gas),
-  // 估算值差 ~2.8k → 刚好 OOG。显式估算 + 加缓冲根治(估算这步同时把 revert 原因提前暴露)。
-  const GAS_BUFFER = 50_000n;
-
-  /** 估 gas(加缓冲)+ 发交易 + 等收据 + 断言成功;label 进断言上下文 */
-  const send = async (
-    label: string,
-    wallet: typeof p0.wallet,
-    functionName: string,
-    args: readonly unknown[],
-  ) => {
-    const estimated = await publicClient.estimateContractGas({
-      address,
-      abi,
-      functionName,
-      args,
-      account: wallet.account,
-    });
-    const hash = await wallet.writeContract({ address, abi, functionName, args, gas: estimated + GAS_BUFFER });
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    assert.equal(receipt.status, 'success', `[A] ${label} 交易状态`);
-    return receipt;
-  };
+  // gas 估算 flake 的 workaround 在 lib/tx.ts(GAS_BUFFER + 根因注释)
+  const { send } = makeSender({ publicClient, address, abi, tag: '[A]' });
 
   // ===== 开局:两份 board 证明 + createGame / joinGame =====
   console.log('[A] 生成 board 证明 A ...');
@@ -134,7 +111,7 @@ try {
     hits: readonly [number, number];
     winner: Address;
   };
-  assert.equal(game.phase, PHASE_FINISHED, '[A] 终局 phase 应为 Finished(4)');
+  assert.equal(game.phase, Phase.Finished, '[A] 终局 phase 应为 Finished(4)');
   assert.equal(game.winner.toLowerCase(), p0.account.address.toLowerCase(), '[A] winner 应为 P0');
   assert.deepEqual([...game.hits], [0, TOTAL_SHIP_CELLS], '[A] hits 应为 [0,17]');
   console.log('[A] 终局状态:phase=Finished winner=P0 hits=[0,17] ✓');

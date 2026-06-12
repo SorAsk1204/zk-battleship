@@ -27,8 +27,8 @@ const result = validateBoard(board);
 assert.deepEqual(result, { ok: true }, `烟测失败:合法布阵被判非法 ${JSON.stringify(result)}`);
 console.log('烟测通过:@zk-battleship/circuits workspace TS 源跨包解析 OK(validateBoard → ok)');
 
-// ===== 场景脚本(顺序执行;B 超时 / C 取消 于后续任务追加) =====
-const SCENARIOS = ['a-full-game.ts'];
+// ===== 场景脚本(顺序执行:A 全局打满 / B 超时判负 / C 撤局) =====
+const SCENARIOS = ['a-full-game.ts', 'b-timeout.ts', 'c-cancel.ts'];
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 for (const name of SCENARIOS) {
