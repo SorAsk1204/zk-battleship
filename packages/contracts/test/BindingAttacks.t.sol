@@ -139,6 +139,8 @@ contract BindingAttacksTest is BattleshipHarness {
 
         ShotProof memory p = ProofFixtures.shotBHit(0);
         p.a[0] += 1; // 破坏证明点,pubSignals 不动
+        // gas 报告里本用例 ~1.02B gas 属预期:篡改后的点不在 bn254 曲线上 ⇒ 配对预编译失败,按
+        // EIP-196/197 语义吞掉全部转发 gas(verifier 用 staticcall(sub(gas(), 2000), ...) 转发);非 bug 非死循环。
         vm.prank(p1);
         vm.expectRevert(bytes("BAD_PROOF"));
         game.respond(id, 1, p);
@@ -177,7 +179,7 @@ contract BindingAttacksTest is BattleshipHarness {
     /// 语义说明(§5.5):同 (commitment,tx,ty) 的证明重放本质**无害**——result 由棋盘与
     /// 坐标唯一确定,重放只能"再说一遍同样的真话",不可能改写结果;REPEAT 守卫又保证同一格
     /// 不会二次进入 pending。状态机让重放连表达机会都没有:无 pending 炮击即无处可答。
-    function test_replayIsHarmless() public {
+    function test_sameGameReplayRejected() public {
         uint256 id = createAndJoin();
         vm.prank(p0);
         game.attack(id, ProofFixtures.bShipXs()[0], ProofFixtures.bShipYs()[0]);
@@ -203,7 +205,7 @@ contract BindingAttacksTest is BattleshipHarness {
     /// 就是它的合法答案(§5.5 重放无害的跨局版,respond 语义上不存在"哪一局的证明"之分)。
     /// 跨局防重放真正的需求是**隐藏布阵**,靠"每局新 salt ⇒ 新承诺"(客户端纪律,M3):
     /// 承诺一变,绑定 (1) 自动让旧证明全部失效;合约层不防,也不需要防。
-    function test_attackProofCannotCrossGames() public {
+    function test_crossGameProofReuseIsValid_byDesign() public {
         uint256 id1 = createAndJoin();
         uint256 id2 = createAndJoin();
 
