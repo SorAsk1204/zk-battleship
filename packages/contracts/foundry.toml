@@ -6,7 +6,14 @@ libs = ["lib"]
 test = "test"
 ffi = false
 fs_permissions = []
+# 本地 demo;gas snapshot 仅记录。要开优化器须在 M1 .gas-snapshot 落库前决定。
+optimizer = false
+# 钉死当前 forge 默认值,防 forge 升级后 evm 版本漂移导致字节码/gas 变化。
+evm_version = "prague"
 
 [fmt]
 # forge fmt 默认配置即可;留出此节是为了 Design §6.5 的 forge fmt 纪律,
 # 后续若需收紧(line_length 等)在这里加。
+# snarkjs 生成的 verifier 不是 fmt-clean:不 ignore 会陷入 fmt 改写 → 重新导出
+# 又覆盖回去的 fmt↔export 互相改写死循环,故对生成文件一律不 fmt。
+ignore = ["src/verifiers/*.sol", "test/fixtures/ProofFixtures.sol"]
