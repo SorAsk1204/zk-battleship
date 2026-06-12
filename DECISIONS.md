@@ -102,3 +102,7 @@ D6 确定性按 Task 0.3 约定对真电路重跑复核:board 与 shot 各双跑
 - Invariants / 全局回放类测试 8–9M gas 是 33 次真证明验证的**累计值**,不代表任何单笔操作。
 
 无容差门禁维持规划期裁决:proof 字节含 prover 随机数(见 Task 1.7 补记),fixture 重新生成后 calldata 非零字节数变化,gas 天然抖动,只记录、靠人审 diff。配套裁决:foundry.toml `optimizer = false` 维持,.gas-snapshot 基于无优化器字节码落库;后续若开优化器属六数字全量重置,须同 commit 重交 .gas-snapshot。
+
+### 2026-06-13 Task 2.5 — D10 schema 追加 rpcUrl 字段
+
+`web/public/deployment.json` 实际 schema = D10 五字段 + `rpcUrl`(`http://127.0.0.1:8545`,demo.ts 写入)。M3 注意:(a) `deployBlock` 是 Number;(b) `rpcUrl` 是 HTTP,wagmi 的 ws transport 须自行推导 `ws://127.0.0.1:8545`(anvil 同端口双协议),Task 3.3 落地时裁决 rpcUrl 是权威还是仅供参考并在此追记;(c) `VITE_DEMO === '1'`(字符串)仅在 pnpm demo 启动的 dev server 中存在,直接 `pnpm -F web dev` 与生产构建均为 undefined → injected connector 路径(D14)。
