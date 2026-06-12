@@ -2,13 +2,20 @@
 pragma solidity ^0.8.24;
 
 import {Test} from "forge-std/Test.sol";
-import {Battleship} from "../src/Battleship.sol";
+import {Battleship, IBoardVerifier, IShotVerifier} from "../src/Battleship.sol";
+import {BoardVerifier} from "../src/verifiers/BoardVerifier.sol";
+import {ShotVerifier} from "../src/verifiers/ShotVerifier.sol";
 
-/// @notice M0 sanity 测试:验证 forge-std 可用、占位合约可部署。
-///         让根目录 test:all 的 contracts 段从 M0 起就有真实测试可跑;M1 替换为完整测试。
+/// @notice 冒烟测试:真 verifier 三件套可部署、constructor 注入正确。
+///         完整游戏逻辑测试套件是 Task 1.8,这里只保持 test:all 冒烟绿。
 contract SanityTest is Test {
-    function test_PlaceholderDeploys() public {
-        Battleship b = new Battleship();
-        assertTrue(address(b) != address(0));
+    function test_DeploysWithRealVerifiers() public {
+        BoardVerifier bv = new BoardVerifier();
+        ShotVerifier sv = new ShotVerifier();
+        Battleship b = new Battleship(IBoardVerifier(address(bv)), IShotVerifier(address(sv)));
+
+        assertEq(address(b.boardVerifier()), address(bv));
+        assertEq(address(b.shotVerifier()), address(sv));
+        assertEq(b.nextGameId(), 0); // 首局 createGame 后应为 1(gameId 从 1 起,D11)
     }
 }
