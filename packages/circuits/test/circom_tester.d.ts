@@ -3,11 +3,14 @@
  * 注意:其内部用字符串拼接 exec circom,路径含空格必炸(Windows 纪律 #1)。
  */
 declare module 'circom_tester' {
+  /** 标量信号;嵌套数组对应电路中的多维 signal input(如 board 的 ships[5][3]) */
+  export type SignalScalar = bigint | number | string;
+  export type CircuitInput = Record<
+    string,
+    SignalScalar | SignalScalar[] | SignalScalar[][]
+  >;
   export type WasmTester = {
-    calculateWitness(
-      input: Record<string, bigint | number | string | Array<bigint | number | string>>,
-      sanityCheck?: boolean,
-    ): Promise<bigint[]>;
+    calculateWitness(input: CircuitInput, sanityCheck?: boolean): Promise<bigint[]>;
     checkConstraints(witness: bigint[]): Promise<void>;
     assertOut(witness: bigint[], expectedOut: Record<string, unknown>): Promise<void>;
   };
