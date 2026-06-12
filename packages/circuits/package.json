@@ -1,0 +1,28 @@
+{
+  "name": "@zk-battleship/circuits",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "exports": {
+    ".": "./lib/index.ts",
+    "./proof": "./lib/proof.ts",
+    "./node": "./lib/node.ts"
+  },
+  "scripts": {
+    "test": "mocha --import=tsx --timeout 120000 --exit \"test/**/*.test.ts\""
+  },
+  "dependencies": {
+    "circomlib": "2.0.5",
+    "poseidon-lite": "0.3.0",
+    "snarkjs": "0.7.6"
+  },
+  "devDependencies": {
+    "@types/mocha": "^10",
+    "@types/node": "^24",
+    "circom_tester": "0.0.24",
+    "circomlibjs": "0.1.7",
+    "mocha": "^10",
+    "tsx": "^4",
+    "typescript": "~5.9"
+  }
+}

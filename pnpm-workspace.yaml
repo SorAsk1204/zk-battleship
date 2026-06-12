@@ -3,6 +3,9 @@ packages:
 
 # v11 默认 strictDepBuilds:原生构建脚本须显式放行(见 DECISIONS.md Task 0.1)
 allowBuilds:
+  # circomlibjs(仅测试 Poseidon 互证用)的传递依赖,node-gyp 原生包;Poseidon 走
+  # wasm 实现不需要它,显式拒绝构建,避免依赖本机 MSVC(见 DECISIONS.md Task 0.2)
+  blake-hash: false
   esbuild: true
 
 # 显式锁定 pnpm 默认布局:circom 编译用 `-l node_modules` 依赖 circomlib
