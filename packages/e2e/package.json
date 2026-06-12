@@ -4,7 +4,8 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
-    "test": "tsx src/run-all.ts"
+    "test": "tsx src/run-all.ts",
+    "e2e:a": "tsx src/a-full-game.ts"
   },
   "dependencies": {
     "execa": "^9",
