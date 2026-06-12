@@ -1,0 +1,21 @@
+@import "tailwindcss";
+
+@theme {
+  --color-*: initial;   /* 清空 Tailwind 默认调色板:写 bg-red-500 必须编译不出来(D13) */
+  --color-abyss: #081019;
+  --color-console: #0D1B26;
+  --color-grid: #1E3A4A;
+  --color-phosphor: #35E0C8;
+  --color-flare: #FF7A45;
+  --color-foam: #C8D8DC;
+  --color-mist: #5A7484;
+  --font-display: "Chakra Petch", sans-serif;
+  --font-sans: "Inter", sans-serif;
+  --font-mono: "IBM Plex Mono", monospace;
+}
+
+@layer base {
+  body {
+    @apply bg-abyss font-sans text-foam;
+  }
+}
