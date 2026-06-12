@@ -1,0 +1,12 @@
+[profile.default]
+solc = "0.8.28"
+src = "src"
+out = "out"
+libs = ["lib"]
+test = "test"
+ffi = false
+fs_permissions = []
+
+[fmt]
+# forge fmt 默认配置即可;留出此节是为了 Design §6.5 的 forge fmt 纪律,
+# 后续若需收紧(line_length 等)在这里加。

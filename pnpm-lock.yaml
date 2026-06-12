@@ -46,6 +46,8 @@ importers:
         specifier: ~5.9
         version: 5.9.3
 
+  packages/contracts: {}
+
 packages:
 
   '@esbuild/aix-ppc64@0.28.0':
