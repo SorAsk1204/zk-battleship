@@ -1,0 +1,5 @@
+# artifacts/ 提交 git(D5),manifest.json 记录每个文件的 sha256:
+# 必须保证 clone 后字节逐一还原,任何 eol 转换都会让 manifest 哈希对不上
+# (本机 autocrlf=true 时 verification_key.json/manifest.json 会被转 CRLF)。
+# wasm/zkey 虽会被 git 自动识别为二进制,这里一并显式钉死,不赌启发式。
+packages/circuits/artifacts/** -text

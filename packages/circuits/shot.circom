@@ -24,7 +24,7 @@ template Shot() {
     // 协议锁定(§4.1):与 board.circom / lib SHIP_LENGTHS 一致
     var LENS[5] = [5, 4, 3, 3, 2];
 
-    // ── 约束 1:承诺绑定(防换棋盘)──
+    // ── 约束 1(Design §5.3 编号 1):承诺绑定(防换棋盘)──
     // 填法必须与 board.circom 逐字一致(§5.1 顺序锁定):
     // inputs = [x0,y0,d0, ..., x4,y4,d4, salt],salt 固定在 inputs[15]。
     // 顺序写错 ⇒ 同一布阵在 board/shot 两电路承诺对不上,S2/S3 测试钉死这条。
@@ -37,7 +37,7 @@ template Shot() {
     h.inputs[15] <== salt;
     h.out === commitment;
 
-    // ── 约束 3(防御性):tx, ty 钉死 < 16 ──
+    // ── 防御性检查 A(Design 未编号,非协议要求):tx, ty 钉死 < 16 ──
     // InShip 比较器健全性前提(common.circom 总纲):cx, cy 必须 < 16,否则
     // 4bit 比较器对 p-1 等域回绕值取位是垃圾。注意这里只挡 ≥16:tx∈[10,15]
     // 能通过本约束,此时 InShip 全 0、result=0(与 lib isHit 域外=0 一致);
@@ -47,7 +47,7 @@ template Shot() {
     component tyb = Num2Bits(4);
     tyb.in <== ty;
 
-    // ── 约束 4(防御性冗余、非协议要求):ships 合法性 ──
+    // ── 防御性检查 B(Design 未编号,非协议要求):ships 合法性冗余 ──
     // 承诺绑定已保证 ships 与 board 电路验证过的完全一致(Poseidon 抗碰撞),
     // 这里重跑 ValidShip 仅作纵深防御,不承担协议语义。
     component valid[5];
@@ -58,7 +58,7 @@ template Shot() {
         valid[s].dir <== ships[s][2];
     }
 
-    // ── 约束 2:result = Σ 五舰 InShip(s, tx, ty) ──
+    // ── 约束 2(Design §5.3 编号 2):result = Σ 五舰 InShip(s, tx, ty) ──
     // board 阶段已保证无重叠 ⇒ sum ∈ {0,1};仍加 sum*(sum-1)===0 防御性约束
     // (若上游不变量被打破,这里让系统不可满足而不是输出 2)。
     component inShip[5];

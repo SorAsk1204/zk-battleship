@@ -1,0 +1,24 @@
+{
+  "circomVersion": "2.1.9",
+  "snarkjsVersion": "0.7.6",
+  "circuits": {
+    "board": {
+      "nConstraints": 15334,
+      "ptauPower": 14,
+      "files": {
+        "board/board.wasm": "19a727d6b97b0486348d43b1a0802423aba2bab4c62b0bbffd1030235eb42a20",
+        "board/board.zkey": "e186a256027ae532d710f43df9ee25c0de47b20d443340a53319de367640c3d1",
+        "board/verification_key.json": "b0781ee0694205c4c89439c7fb6e192bdbb4046ccacc0bc4ca7374c470f3a60b"
+      }
+    },
+    "shot": {
+      "nConstraints": 888,
+      "ptauPower": 12,
+      "files": {
+        "shot/shot.wasm": "ff596de9d3d14fc03e78172fc911a8406a8fb70e9d219be6e4cff6d9bafc86ca",
+        "shot/shot.zkey": "ecae4f3726cf5e00fd1f2ade9fc509773f800f01610d80a3008c85622a6444a6",
+        "shot/verification_key.json": "be755fbe3b8686316608b1a566182270a577e34e0f8a49bb6b7ff1460b10b08b"
+      }
+    }
+  }
+}

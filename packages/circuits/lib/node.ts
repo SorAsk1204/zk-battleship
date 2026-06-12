@@ -2,8 +2,9 @@
  * "@zk-battleship/circuits/node" 入口 —— Node 专用(snarkjs fullProve + 产物绝对路径)。
  * 浏览器不得 import 本文件。
  *
- * 注意:artifacts/ 由 M1(Task 1.5 export 脚本)生成并提交;Task 0.2 仅保证编译。
- * 约定:scripts/export.ts 拷贝产物时必须落到 artifactPaths 指定的精确路径。
+ * 注意:artifacts/ 由 scripts/export.ts 生成并提交 git(Task 1.5,D5)。
+ * artifactPaths 是产物路径的单一真理源:export.ts 直接 import 它作为拷贝目标,
+ * 测试也从这里取 vkey 路径——不准在别处重新拼接同一路径。
  */
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,10 +22,12 @@ export const artifactPaths = {
   board: {
     wasm: path.join(ARTIFACTS_DIR, 'board', 'board.wasm'),
     zkey: path.join(ARTIFACTS_DIR, 'board', 'board.zkey'),
+    vkey: path.join(ARTIFACTS_DIR, 'board', 'verification_key.json'),
   },
   shot: {
     wasm: path.join(ARTIFACTS_DIR, 'shot', 'shot.wasm'),
     zkey: path.join(ARTIFACTS_DIR, 'shot', 'shot.zkey'),
+    vkey: path.join(ARTIFACTS_DIR, 'shot', 'verification_key.json'),
   },
 } as const;
 

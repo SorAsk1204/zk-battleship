@@ -6,7 +6,8 @@
  * 产物纪律:
  * - 仅 board/shot(生产电路)写 contracts/src/verifiers/ 与 artifacts/;
  *   其余电路(smoke)的 verifier 只写 build/<name>/Verifier.sol,不准污染 contracts/artifacts;
- * - artifacts/<name>/<name>.wasm 与 <name>.zkey 的精确路径必须对齐 lib/node.ts 的 artifactPaths;
+ * - artifacts/ 内的精确路径以 lib/node.ts 的 artifactPaths 为单一真理源:本脚本直接
+ *   import 它作为拷贝目标,不在此处重复拼路径(防两处独立计算漂移);
  * - manifest.json 记每文件 sha256 + circom/snarkjs 版本 + 约束数 + ptau power(D5:换 zkey
  *   必须与 verifier 同 commit 原子更新)。
  */
@@ -25,6 +26,7 @@ import {
   isProductionCircuit,
   sha256File,
 } from './common.ts';
+import { artifactPaths } from '../lib/node.ts';
 import { SNARKJS_VERSION, type SetupMeta } from './setup.ts';
 
 const TEMPLATE_PATH = path.join(
@@ -92,20 +94,27 @@ export async function exportCircuit(name: string): Promise<void> {
     return;
   }
 
-  // 2) 拷贝 wasm/zkey/vkey 到 artifacts/<name>/(路径对齐 lib/node.ts artifactPaths)
-  const outDir = path.join(ARTIFACTS_DIR, name);
-  await fs.mkdir(outDir, { recursive: true });
+  // 2) 拷贝 wasm/zkey/vkey 到 artifacts/<name>/
+  // 拷贝目标直接取 lib/node.ts 的 artifactPaths(单一真理源,不在这里重复拼路径)
+  const targets = artifactPaths[name as keyof typeof artifactPaths];
+  if (!targets) {
+    fail(
+      `${name} 是生产电路(common.ts DEFAULT_CIRCUITS)但 lib/node.ts artifactPaths 没有它的条目。` +
+        `两份清单必须同步:先在 lib/node.ts 补 artifactPaths.${name} 再重跑 export。`,
+    );
+  }
   const copies: Array<[string, string]> = [
-    [p.wasm, path.join(outDir, `${name}.wasm`)],
-    [p.zkey, path.join(outDir, `${name}.zkey`)],
-    [p.vkey, path.join(outDir, 'verification_key.json')],
+    [p.wasm, targets.wasm],
+    [p.zkey, targets.zkey],
+    [p.vkey, targets.vkey],
   ];
   const files: Record<string, string> = {};
   for (const [src, dest] of copies) {
+    await fs.mkdir(path.dirname(dest), { recursive: true });
     await fs.copyFile(src, dest);
     files[path.relative(ARTIFACTS_DIR, dest).replaceAll('\\', '/')] = await sha256File(dest);
   }
-  console.log(`[export] ${name}: artifacts -> ${outDir}`);
+  console.log(`[export] ${name}: artifacts -> ${path.dirname(targets.wasm)}`);
 
   // 3) manifest.json(合并更新,保留其他电路条目)
   // 读取纪律:仅 ENOENT 视为首次生成;JSON 坏掉或缺 circuits 字段一律 fail 交人工——

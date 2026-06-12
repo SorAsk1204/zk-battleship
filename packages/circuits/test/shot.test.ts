@@ -27,7 +27,8 @@ import {
 import { artifactPaths, proveShot } from '../lib/node.ts';
 // compile.ts 有 isDirectRun 守卫,被 import 不会触发编译副作用
 import { SHOT_CONSTRAINT_LIMIT, compileCircuit } from '../scripts/compile.ts';
-import { circuitPaths, readR1csStatsThrows } from '../scripts/common.ts';
+import { circuitPaths, readR1csStatsThrows, sha256File } from '../scripts/common.ts';
+import type { SetupMeta } from '../scripts/setup.ts';
 import { LEGAL_BOARD, P_MINUS_1, SALT, assertNoSpaceInPaths, mkBoard } from './helpers.ts';
 
 const PKG_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -183,9 +184,9 @@ describe('shot circuit(S1–S4 witness 层)', function () {
 describe('shot circuit(S5–S7 证明层,需 artifacts/shot)', function () {
   this.timeout(120_000);
 
-  // 证明层吃 Task 1.5 提交的正式产物(lib/node.ts artifactPaths 精确路径)。
-  // vkey 跟着 export.ts 的拷贝布局:artifacts/shot/verification_key.json。
-  const VKEY_PATH = path.join(path.dirname(artifactPaths.shot.zkey), 'verification_key.json');
+  // 证明层吃 Task 1.5 提交的正式产物(lib/node.ts artifactPaths 是路径单一真理源,
+  // export.ts 的拷贝目标与这里取的是同一份常量)。
+  const VKEY_PATH = artifactPaths.shot.vkey;
   const REQUIRED = [artifactPaths.shot.wasm, artifactPaths.shot.zkey, VKEY_PATH];
 
   // 基线证明:命中格 (9,0)(LEGAL_BOARD ship0 船头),S5/S6 共享,只 fullProve 一次
@@ -202,6 +203,21 @@ describe('shot circuit(S5–S7 证明层,需 artifacts/shot)', function () {
           missing.map((f) => `  - ${f}`).join('\n'),
       );
       this.skip();
+    }
+    // 陈旧性断言:setup-meta.json 记录的是 zkey 来源 r1cs 的 sha256。若当前
+    // build/shot/shot.r1cs 已变(改了电路只重编译、没重跑 setup+export),
+    // S5–S7 会在陈旧 zkey 上跑出误导结论——直接 fail 而不是带病通过。
+    // build/ 不存在(纯 clone 只有 artifacts/)时无从比对,跳过该检查。
+    const sp = circuitPaths('shot');
+    if (fs.existsSync(sp.setupMeta) && fs.existsSync(sp.r1cs)) {
+      const meta = JSON.parse(fs.readFileSync(sp.setupMeta, 'utf8')) as SetupMeta;
+      const current = await sha256File(sp.r1cs);
+      assert.equal(
+        current,
+        meta.r1csSha256,
+        `build/shot/shot.r1cs 已与 setup-meta.json 记录不一致(电路改了没重跑 setup)。` +
+          `artifacts/shot 已陈旧,先重跑:pnpm --filter @zk-battleship/circuits run build shot`,
+      );
     }
     vkey = JSON.parse(fs.readFileSync(VKEY_PATH, 'utf8'));
     assert.equal(isHit(LEGAL_BOARD, HIT_X, HIT_Y), 1, '测试自检:(9,0) 必须是命中格');
