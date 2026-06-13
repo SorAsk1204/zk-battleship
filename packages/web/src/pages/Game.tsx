@@ -24,18 +24,28 @@ import { useEffect, useReducer, useState, type ReactNode } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { useAccount } from 'wagmi';
 import { shortAddr } from '../lib/format.ts';
-import { loadDeployment, type Deployment } from '../lib/contracts.ts';
+import { loadDeployment, type Address, type Deployment } from '../lib/contracts.ts';
 import { loadBoard, type BoardRecord } from '../lib/storage.ts';
 import type { Board } from '../lib/boardLogic.ts';
 import { randomSalt } from '../lib/salt.ts';
 import { Phase, type GameView } from '../hooks/gameView.ts';
 import { useGame } from '../hooks/useGame.ts';
+import type { GameLogEntry } from '../hooks/useGame.ts';
 import { useLockFleet } from '../hooks/useLockFleet.ts';
 import { preload } from '../hooks/useProver.ts';
+import { useAutoRespond } from '../hooks/useAutoRespond.ts';
+import { useClaimTimeout } from '../hooks/useClaimTimeout.ts';
+import { useCountdown } from '../hooks/useCountdown.ts';
 import ProofStatus from '../components/ProofStatus.tsx';
 import PostLockPanel from '../components/PostLockPanel.tsx';
+import TurnBanner from '../components/TurnBanner.tsx';
+import HitProgress from '../components/HitProgress.tsx';
+import EventLog from '../components/EventLog.tsx';
 import FleetDock from '../components/board/FleetDock.tsx';
 import PlacementBoard from '../components/board/PlacementBoard.tsx';
+import OwnBoard from '../components/board/OwnBoard.tsx';
+import SonarBoard from '../components/board/SonarBoard.tsx';
+import { cellIdx } from '../components/board/battleMarks.ts';
 import {
   allPlaced,
   initialPlacement,
@@ -49,7 +59,7 @@ import {
 export default function Game() {
   const { id: idParam } = useParams();
   const id = Number(idParam);
-  const { view, isLoading, isNotFound, error } = useGame(id);
+  const { view, eventLog, isLoading, isNotFound, error } = useGame(id);
 
   // ── loading / notfound / error 优先于三幕 ──
   if (error) {
@@ -92,7 +102,7 @@ export default function Game() {
   return (
     <Shell gameId={idParam}>
       {view.act === 'placement' && <PlacementAct id={id} view={view} />}
-      {view.act === 'battle' && <BattleAct view={view} />}
+      {view.act === 'battle' && <BattleAct id={id} view={view} eventLog={eventLog} />}
       {view.act === 'finish' && <FinishAct view={view} />}
     </Shell>
   );
@@ -255,69 +265,246 @@ function JoinPlacement({ id }: { id: number }) {
   );
 }
 
-// ───────────────────────────── battle 幕(3.6 最小占位,真实派生)─────────────────────────────
+// ───────────────────────────── battle 幕(3.7 完整对战幕)─────────────────────────────
 
 /**
- * battle 幕最小占位(3.7 实现完整对战幕)。**渲染真实派生状态**证明 useGame 正确喂战斗态:
- * 轮到谁(isMyTurn + phase 推 4 态文案)、双方被命中数、pending 坐标、双方炮击数、对手短地址。
- * 3.7 在原位替换为己方海域 + 敌方声呐屏 + 准星 + 自动应答。
+ * battle 幕(对战,§7.3):左己方海域 / 右敌方声呐屏 / 中缝回合横幅 + 双方命中进度 + 事件日志 +
+ * 证明状态 + claimTimeout。我方回合在声呐屏点击开炮(+ 准星);对手回合**自动**应答(useAutoRespond);
+ * 倒计时归零且我是非义务方 → 出「认领超时胜利」按钮。整页随 useGame watch 实时刷新,无手动刷新。
+ *
+ * 数据组织:
+ *   - 我的棋盘从 storage 还原一次(loadDeployment + loadBoard),同源喂 OwnBoard(画轮廓)与
+ *     useAutoRespond(出证明所需);缺失则 OwnBoard 不画轮廓、useAutoRespond 大声阻断(§8)。
+ *   - pending 拆向:我是 attacker 的 pending → SonarBoard 的 chainPendingOutCell(待对手应答的我方出炮);
+ *     我是 defender 的 pending → OwnBoard 的 pendingInCell(来袭,自动应答中)。
+ *   - 旁观(myIdx==='observer'):双盘客观只读(无「你」语、不可交互、无自动应答 / 开炮 / claim)。
  */
-function BattleAct({ view }: { view: GameView }) {
-  const turnLabel = whoseTurnLabel(view);
+function BattleAct({
+  id,
+  view,
+  eventLog,
+}: {
+  id: number;
+  view: GameView;
+  eventLog: GameLogEntry[];
+}) {
+  const { address } = useAccount();
+  const isPlayer = view.isPlayer;
+
+  // 部署 + 我的棋盘(玩家才读;旁观无「我的棋盘」)。loadBoard 同步读 localStorage,deployment 异步一次。
+  const [deployment, setDeployment] = useState<Deployment | null>(null);
+  const [myBoard, setMyBoard] = useState<Board | null>(null);
+  // 棋盘是否已读完(deployment 取到 + loadBoard 跑过)。用于「本地棋盘缺失」提示只在读完后显示,
+  // 不在 deployment 异步加载期间(myBoard 暂为 null)闪一下误报。
+  const [boardLoaded, setBoardLoaded] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    setBoardLoaded(false);
+    void loadDeployment()
+      .then((d) => {
+        if (!alive) return;
+        setDeployment(d);
+        if (isPlayer && address) {
+          const rec = loadBoard(d.chainId, d.battleship, id, address);
+          setMyBoard(rec ? (rec.ships as Board) : null);
+        } else {
+          setMyBoard(null);
+        }
+        setBoardLoaded(true);
+      })
+      .catch(() => {
+        if (alive) setBoardLoaded(true);
+      });
+    return () => {
+      alive = false;
+    };
+    // address 变(切账户)→ 重读我的棋盘(同一局换立场,棋盘也换;§7.1 视角翻转)。
+  }, [id, address, isPlayer]);
+
+  // 预热 shot 证明工件(把 zkey 拉取藏在开战前,自动应答时少等网络)。
+  useEffect(() => {
+    void preload('shot').catch(() => {});
+  }, []);
+
+  // pending 拆向(§4.2:pendingShot.attacker / defender)。
+  const pending = view.pendingShot;
+  const iAmPendingAttacker =
+    pending !== null && isPlayer && view.myIdx === pending.attacker;
+  const chainPendingOutCell =
+    iAmPendingAttacker && pending ? cellIdx(pending.x, pending.y) : null;
+  const pendingInCell =
+    pending !== null && view.pendingShotIsForMe ? cellIdx(pending.x, pending.y) : null;
+
+  const isMyAttackTurn = isPlayer && view.phase === Phase.AwaitingAttack && view.isMyTurn;
+
   return (
-    <section className="space-y-5" data-testid="battle-act">
+    <section className="space-y-4" data-testid="battle-act">
       <div className="flex items-center justify-between">
-        <h1 className="font-display text-2xl font-bold text-phosphor">对战中</h1>
-        <span className="border border-grid px-2 py-0.5 font-mono text-[11px] text-mist">
-          对战 · Task 3.7 实现
+        <h1 className="font-display text-2xl font-bold text-phosphor">作战室 · #{id}</h1>
+        <span className="font-mono text-[11px] text-mist" data-testid="my-perspective">
+          {view.myIdx === 0 ? '视角 P0' : view.myIdx === 1 ? '视角 P1' : '旁观'}
+          {view.opponent ? ` · 对手 ${shortAddr(view.opponent)}` : ''}
         </span>
       </div>
 
-      {/* 回合横幅(真实派生:isMyTurn × phase) */}
-      <div
-        className="border border-phosphor/40 bg-abyss px-4 py-3"
-        data-testid="turn-banner"
-        data-my-turn={view.isMyTurn ? '1' : '0'}
-      >
-        <p className="font-mono text-sm text-phosphor">{turnLabel}</p>
-      </div>
+      {/* 三栏:左己方海域 / 中缝 / 右敌方声呐屏。<1024px 堆叠(己方在下,§7.2)。 */}
+      <div className="grid gap-5 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
+        {/* 中缝在 <lg 时排在最前(order-first),lg 时回中间(order-none) */}
+        <div className="order-first space-y-3 lg:order-2">
+          <TurnBanner view={view} />
+          <HitProgress
+            myHits={view.myHits}
+            opponentHits={view.opponentHits}
+            p0Label={isPlayer ? undefined : 'P0'}
+            p1Label={isPlayer ? undefined : 'P1'}
+          />
+          {isPlayer && (
+            <BattleStatus
+              view={view}
+              gameId={BigInt(id)}
+              contract={deployment?.battleship}
+              chainId={deployment?.chainId}
+              address={address}
+            />
+          )}
+          <EventLog entries={eventLog} myIdx={view.myIdx} />
+        </div>
 
-      {/* 命中盘(§4:17 命中即败;hits[i]=玩家 i 被命中) */}
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Stat label="我方战损(被命中)" value={`${view.myHits ?? '—'} / 17`} testid="my-hits" />
-        <Stat label="对手战损(被命中)" value={`${view.opponentHits ?? '—'} / 17`} testid="opp-hits" />
-      </div>
+        {/* 左:己方海域(被打记录)。lg 时 order-1。 */}
+        <div className="space-y-2 lg:order-1">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-mist">己方海域</h2>
+          <OwnBoard board={myBoard} enemyShots={view.enemyShots} pendingInCell={pendingInCell} />
+          {isPlayer && boardLoaded && myBoard === null && (
+            <p className="max-w-[20rem] font-mono text-[11px] text-flare" data-testid="own-board-missing">
+              本地棋盘缺失,无法显示己方布局(来袭与命中标记仍据链上显示)。若轮到你应答将无法生成证明,请导入部署文件。
+            </p>
+          )}
+        </div>
 
-      {/* 炮击计数 + pending + 对手 */}
-      <dl className="space-y-2 border border-grid bg-console px-4 py-3 font-mono text-xs">
-        <Row k="我方开炮数">{view.myShots.length}</Row>
-        <Row k="对手开炮数">{view.enemyShots.length}</Row>
-        <Row k="待应答炮击">
-          {view.pendingShot
-            ? `${view.pendingShot.coord}（${view.pendingShotIsForMe ? '待我应答' : '待对手应答'}）`
-            : '—'}
-        </Row>
-        <Row k="对手">{view.opponent ? shortAddr(view.opponent) : '—'}</Row>
-        <Row k="我的视角">{view.myIdx === 0 ? 'P0' : view.myIdx === 1 ? 'P1' : '旁观'}</Row>
-      </dl>
+        {/* 右:敌方声呐屏(我的炮击记录 + 开炮)。lg 时 order-3。 */}
+        <div className="space-y-2 lg:order-3">
+          <h2 className="font-mono text-xs uppercase tracking-wide text-mist">敌方海域</h2>
+          <SonarBoard
+            gameId={BigInt(id)}
+            contract={(deployment?.battleship ?? '0x0000000000000000000000000000000000000000') as Address}
+            myShots={view.myShots}
+            myFiredCells={view.myFiredCells}
+            chainPendingOutCell={chainPendingOutCell}
+            // 部署未就绪时不放行点击(避免对 0x0 发交易);就绪后才允许我方攻击回合交互。
+            isMyAttackTurn={isMyAttackTurn && deployment !== null}
+          />
+        </div>
+      </div>
 
       <BackToLobby className="inline-block" />
     </section>
   );
 }
 
-/** 回合文案(真实派生,§4.2 义务方):4 态——我开炮 / 等对手开炮 / 我应答 / 对手应答中。 */
-function whoseTurnLabel(view: GameView): string {
-  if (!view.isPlayer) {
-    // 旁观:按 phase + turn 客观描述,不用「你」。
-    const who = view.obligatedIdx === 0 ? 'P0' : 'P1';
-    return view.phase === Phase.AwaitingResponse ? `等待 ${who} 应答` : `等待 ${who} 开炮`;
-  }
-  if (view.phase === Phase.AwaitingResponse) {
-    return view.pendingShotIsForMe ? '轮到你应答（对手已开炮）' : '对手应答中…';
-  }
-  // AwaitingAttack
-  return view.isMyTurn ? '轮到你开炮' : '等待对手开炮';
+/**
+ * 中缝战斗状态条:自动应答状态(ProofStatus shot 电路)+ 开炮链上确认 + 倒计时 + claimTimeout +
+ * §8 棋盘缺失阻断横幅。只玩家渲染(旁观无这些动作)。
+ */
+function BattleStatus({
+  view,
+  gameId,
+  contract,
+  chainId,
+  address,
+}: {
+  view: GameView;
+  gameId: bigint;
+  contract: Address | undefined;
+  chainId: number | undefined;
+  address: Address | undefined;
+}) {
+  // 自动应答(对手回合,§7.3)。触发只读链上态,§10 重开自动补应答。
+  const { status: respondStatus, respondingCoord } = useAutoRespond({
+    view,
+    gameId,
+    contract,
+    chainId,
+    address,
+  });
+
+  // claimTimeout(§4.3):义务方超时 + 我是非义务方玩家 → 可认领。
+  const { status: claimStatus, claim } = useClaimTimeout();
+
+  // 倒计时(§4.3 TIMEOUT=300):仅对战且有义务方时计时。
+  const hasObligation = view.obligatedIdx !== null;
+  const { label: timeLabel, expired } = useCountdown({
+    lastActionAt: view.lastActionAt,
+    active: hasObligation,
+  });
+
+  // 我是否非义务方玩家(claimant):义务方负有行动义务、不能认领自己超时(§4.3 + §10)。
+  const iAmObligated =
+    (view.myIdx === 0 || view.myIdx === 1) && view.obligatedIdx === view.myIdx;
+  const iAmClaimant = view.isPlayer && hasObligation && !iAmObligated;
+  // 按钮可见:我是 claimant 且已超时(前端近似;点了由合约最终裁决,见 useCountdown 注释)。
+  const canClaim = iAmClaimant && expired;
+
+  return (
+    <div className="space-y-2" data-testid="battle-status">
+      {/* 倒计时:展示义务方剩余时间(我方义务 → 我的倒数;对手义务 → 对手的倒数)。 */}
+      {hasObligation && (
+        <div className="flex items-center justify-between border border-grid bg-console px-3 py-1.5">
+          <span className="font-mono text-[11px] text-mist">
+            {iAmObligated ? '你的行动倒计时' : '对手行动倒计时'}
+          </span>
+          <span
+            className={'font-mono text-sm font-bold ' + (expired ? 'text-flare' : 'text-phosphor')}
+            data-testid="countdown"
+            data-expired={expired ? '1' : '0'}
+          >
+            {expired ? '00:00' : timeLabel}
+          </span>
+        </div>
+      )}
+
+      {/* §8 棋盘缺失 / 承诺不符:大声阻断横幅(绝不静默弃权)。 */}
+      {respondStatus.phase === 'blocked' && (
+        <div
+          className="border border-flare bg-abyss px-3 py-2"
+          data-testid="autorespond-blocked"
+          role="alert"
+        >
+          <p className="font-mono text-xs text-flare">⚠ {respondStatus.message}</p>
+        </div>
+      )}
+
+      {/* 自动应答状态(shot 证明 + 链上确认,§7.5 两阶段);proving 文案带坐标。 */}
+      {respondStatus.phase !== 'idle' && respondStatus.phase !== 'blocked' && (
+        <ProofStatus
+          status={respondStatus}
+          circuit="shot"
+          provingLabel={`正在应答${respondingCoord ? ` ${respondingCoord}` : ''}的炮击…`}
+          doneLabel={`已应答${respondingCoord ? ` ${respondingCoord}` : ''}`}
+        />
+      )}
+
+      {/* 认领超时胜利按钮(§7.6 动词):仅 claimant 且已超时可见可点;--flare 提示(呼吸是 M4)。 */}
+      {canClaim && contract && (
+        <button
+          type="button"
+          data-testid="claim-timeout"
+          onClick={() => void claim(gameId, contract)}
+          disabled={claimStatus.phase === 'sending' || claimStatus.phase === 'confirming'}
+          className="w-full border border-flare bg-flare/10 px-3 py-2 font-display text-sm font-bold text-flare hover:bg-flare/20 disabled:opacity-50"
+        >
+          {claimStatus.phase === 'sending' || claimStatus.phase === 'confirming'
+            ? '认领中…'
+            : '认领超时胜利'}
+        </button>
+      )}
+      {claimStatus.phase === 'error' && (
+        <p className="font-mono text-[11px] text-flare" data-testid="claim-error">
+          {claimStatus.message}
+        </p>
+      )}
+    </div>
+  );
 }
 
 // ───────────────────────────── finish 幕(3.6 最小占位)─────────────────────────────
@@ -385,20 +572,3 @@ function Spinner() {
   );
 }
 
-function Stat({ label, value, testid }: { label: string; value: string; testid?: string }) {
-  return (
-    <div className="border border-grid bg-console px-4 py-3" data-testid={testid}>
-      <p className="text-xs text-mist">{label}</p>
-      <p className="mt-1 font-mono text-lg font-bold text-phosphor">{value}</p>
-    </div>
-  );
-}
-
-function Row({ k, children }: { k: string; children: ReactNode }) {
-  return (
-    <div className="flex items-center justify-between">
-      <dt className="text-mist">{k}</dt>
-      <dd className="text-foam">{children}</dd>
-    </div>
-  );
-}

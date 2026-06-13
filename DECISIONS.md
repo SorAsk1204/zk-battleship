@@ -295,3 +295,41 @@ wagmi config 必须静态,合约地址才运行时 fetch;chain 用 viem 内置 a
 - 全程 **0 console error**(仅 RR v7 future-flag warning)。demo 干净停(anvil + vite kill,端口释放)。
 
 **文件**:`src/hooks/{useGame.ts, useGame.test.ts}`(新增)、`src/components/PostLockPanel.tsx`(新增,抽自 NewGame post-lock 块)、`src/pages/{Game.tsx(重写:三幕路由 + join 布阵), NewGame.tsx(改:done 导航 /game/:id,删就地 post-lock 块)}`;`src/hooks/{gameView.ts, gameView.test.ts}`(3.6 前置,纯派生核 + 41 单测,本提交一并纳入)。复用 gameView/storage(loadBoard)/contracts(loadDeployment/DeploymentNotFoundError)/boardLogic(shipCells/Board)/useLockFleet/ProofStatus/PlacementBoard/FleetDock/placement/BoardGrid/ExportButton/salt/format/useProver/abi——均 re-use,未重造。
+
+### 2026-06-14 Task 3.7 对战幕功能版 — 双盘 + 准星 + 开炮 + 自动应答 + 倒计时 + 事件日志
+
+真浏览器验收(pnpm demo + playwright,单浏览器双账户对打)全程通过,fresh-load **0 console error**(仅 RR v7 future-flag warning,同 3.3–3.6)。Game.tsx 的 `BattleAct` 占位**原位替换**为完整对战幕。
+
+**(布局,§7.3)三栏 grid**:左 OwnBoard(己方海域/被打记录)、中缝(TurnBanner + HitProgress + BattleStatus[倒计时 + 自动应答状态 + claimTimeout] + EventLog)、右 SonarBoard(敌方声呐屏/我的炮击 + 开炮)。`lg:grid-cols-[auto_minmax(0,1fr)_auto]` + `order-*`:<1024px 堆叠且中缝置顶(order-first lg:order-2),≥1024px 三栏并排。我的棋盘**父级 loadBoard 一次**,同源喂 OwnBoard(画船轮廓)与 useAutoRespond(出证明用);address 变(切账户)重读(同一局换立场棋盘也换)。
+
+**(useAttack + 乐观待应答标记)** 开炮 = 一笔 attack(gameId,x,y)(无证明)。useAttack(alreadyFired):REPEAT **前端预检**(命中即拦,省一次必 revert 往返)→ onFired 回调让 SonarBoard 落乐观空心待应答标记(交易确认前就有反馈)→ writeContractAsync → waitForReceipt;成功**不在 hook 内推进相位**(useGame 的 ShotFired watch refetch 把 phase 推进 + 该格转链上 pending),hook 只发交易报相位(职责单一)。SonarBoard 乐观格生命周期(本地 state):点击设;清除 = 进 myFiredCells ∨ 链上 pending 接管该格 ∨ 开炮失败。
+
+**(SonarBoard 禁点集 = D11 真理)** battleMarks.sonarDisabledSet = myFiredCells(链上 shotMap[对手],respond 才置位) ∪ 在飞 pending 出炮格(链上 pending 我是 attacker + 本地乐观)。后者尚不在 shotMap 但绝不能再点(AwaitingResponse 阶段 attack 会 BAD_PHASE),并进禁点集。SonarBoard 仅「我方攻击回合」(phase===AwaitingAttack && isMyTurn && deployment!==null)可点 + hover/focus 出 Crosshair(经 BoardGrid overlay 槽);非攻击回合整盘 disabled。Crosshair = 竖线 + 横线 + 坐标角标(px 绝对定位,格 32px,中心 x*32+16;角标靠右两列贴左缘防越界),**功能版无动画**(声呐扫描/余辉是 M4)。
+
+**(useAutoRespond — 自动应答,§7.3 + §8 + §10)**
+- **触发**:phase===AwaitingResponse && pendingShotIsForMe && myIdx∈{0,1}——**只读链上派生量**,故关页再开/换设备导入棋盘后重开,只要链上仍「待我应答」,effect 挂载即自动开跑(§10 天然成立,无「我刚做了什么」本地记忆)。effect 依赖 pending 的**坐标基元 px/py/pcoord**(非 pendingShot 对象身份:deriveGameView 每次重算都新建该对象,依赖对象会在每次无关 refetch 重跑)。
+- **inFlight 去重**:**module 级** Set 键 `${chainId}:${gameId}:${x},${y}`。module(非 ref)因 StrictMode 双挂载共用 module 作用域、ref 各自独立挡不住;与 useProver module 单例同层。进流程前占键;**成功后不清键**(成功后 phase 翻走触发条件自然 false;保留键堵「respond 已上链、useGame 未 refetch」窗口里重渲染再触发 → 重发必 BAD_PHASE 的噪声);**仅终态错误清键**允许重试。
+- **棋盘缺失 = 大声阻断(§8,绝不静默跳过 = 静默弃权)**:loadBoard 缺失,或 verifyBoardCommitment 对不上 → status='blocked' 带阻断文案,Game.tsx role="alert" 横幅 + OwnBoard 缺失提示双重呈现;**不**进 prove/respond,blocked 占键不释放(防每次无关 refetch 重跑 loadBoard 抖动;重试 = 重载页面 / 3.8 导入)。
+- **出证 + 发交易**:prove('shot', toShotInputs(board, salt, px, py)) → result = Number(publicSignals[0]) → respond(gameId, result, toShotProofArg(calldata))。ProofStatus circuit='shot',provingLabel='正在应答 {coord} 的炮击…'、doneLabel='已应答 {coord}'。
+
+**(toShotProofArg,proofArgs.ts)** 与 toBoardProofArg 同胞:hex calldata → ShotProof bigint tuple,pubSignals 守卫**恰 4 项**(shot 电路 [result, commitment, tx, ty],result 输出在首位)。非 4 项即抛(挡 board calldata 误喂 respond)。respond ABI:result 是 uint8 单独传(= Number(publicSignals[0])),proof.pubSignals 是 uint256[4]。reviewer 建议:ProofStatus 加 provingLabel/doneLabel 泛化路径(不把 respond 模式硬编),接受 LockFleetStatus | AutoRespondStatus。
+
+**(useCountdown + claimTimeout,§4.3 TIMEOUT=300)** 纯核 computeCountdown(已 16 单测)。**now 取链上块时间(非纯墙钟)**:claimTimeout 权威判据是 block.timestamp > lastActionAt+TIMEOUT,而 evm_increaseTime(测试/演示)把**链时间**跳到墙钟之前——纯墙钟倒计时不到点但链上已可 claim。故 hook 周期(5s)getBlock() 取链锚 + 墙钟增量插值平滑 1s 跳动;取块失败回退墙钟。claimant(调用方组合):义务方不能 claim 自己超时,**非义务方玩家**才是 claimant(§4.3+§10);按钮可见 = iAmClaimant && expired,点了由合约最终裁决——**前端决定按钮何时出现,合约决定点了是否成功**。
+
+**(EventLog 措辞翻面,§7.3 + demo 视角)** eventLogLines.toLogLines(纯,14 单测):同一事件按 myIdx 说成「我方/对方」——**fired 的 side=attacker;resolved 的 side=defender(主语翻面:defender===我 → 对方炮击我方 {coord} … 命中/未命中)**;observer 用 P0/P1 客观称谓;reason 短码→人话。TurnBanner.bannerLabel(7 单测)4(玩家)+2(旁观)态 + active 旗 aria-live。HitProgress 双 0–17 刻度条(role=progressbar)。
+
+**(旁观,§7.1 review 建议)** myIdx==='observer' → 双盘客观只读:HitProgress 用 P0/P1 标签、TurnBanner/EventLog 客观称谓、不渲染 BattleStatus(无自动应答/开炮/claim)、SonarBoard 整盘 disabled。**功能版**静态色/点 + 功能性准星,无涟漪/脉冲/抖动/声呐扫描(M4)。
+
+**(单测)** 新增 54 例:proofArgs(+5 toShotProofArg)、useCountdown(16)、battleMarks(12:标记优先级 + 禁点集 D11 + 不 mutate)、eventLogLines(14:翻面 + resolved defender 主语翻面 + observer + reason)、turnBanner(7)。web 271 → **325 全绿**;tsc/build 干净;**主 bundle snarkjs-free 维持**(grep index-*.js:8 个禁用符号全 0;worker chunk 含 groth16×4 + exportSolidityCallData×3——shot 证明在 worker)。root pnpm test:all 四包全绿(含 b-timeout claimTimeout 路径)。
+
+**(browser 证据,单浏览器双账户,真 UI create→join)**:两局均经真 UI create→join(各 2 board 证明落正确 localStorage)。
+- create→join→**无手动刷新自动进对战幕**;回合 + **视角翻转 0 RPC**(P1「等待对手开炮」+ 声呐 100 格 disabled ↔ 切 P0「轮到你开炮」+ 100 格可点,对手/视角/倒计时归属全翻)。
+- 准星:hover F-6 → Crosshair overlay(data-coord=F-6,3 span)。开炮 + 乐观标记:P0 点 A-1(P1 船格)→ tx → 回合翻「等待对手应答 A-1」+ 该格 pending-out + 事件日志「我方开炮 A-1」(时间戳)。
+- **自动应答(零手动点击)**:切 P1 → useAutoRespond 自动开跑 → ProofStatus(shot)→ respond → 回合翻;P1 OwnBoard A-1=hit、战损 1/17;切回 P0 声呐 A-1=hit disabled、对手战损 1/17——**同批事件两端「我方/对方」对称翻面**。
+- **≥3 整回合**:A-1 命中 / J-10 未命中(战损不增)/ B-1 命中(P1 战损 2/17),每回合 auto-respond 自动、进度按命中累加、日志带时间戳、双盘双视角标记正确。
+- **§10 reload 恢复**:P1 攻 H-8 → P0 owes;设 recentConnectorId=demo-p0 + reload → P0 起、H-8 owed → useAutoRespond **reload 后自动 re-fire** → H-8=miss、回合翻、resolved 事件时间戳为 reload 后。
+- **claimTimeout(evm_increaseTime 穿越)**:+301+mine → 倒计时 00:00 expired(链时间 fix 生效);**P0 义务方无 claim 按钮**,切 P1 非义务方 → 「认领超时胜利」可点 → claimTimeout → GameFinished("timeout") → 自动进结算幕「你赢了」。
+- **missing-board 大声失败(§8)**:清 P1 localStorage 棋盘 + reload(F-6 owed)→ **大声 blocked 横幅 role=alert** + OwnBoard 缺失提示——**绝不静默弃权**,未发 respond tx。
+- fresh-load 0 console error(一次 HMR 期 hooks-order 报错仅热更新 useCountdown 加 hook 的过渡产物,clean load 不复现已验证)。demo 干净停(树杀 vite+anvil,8545/5173 释放)。
+
+**文件**:新增 `src/components/board/{OwnBoard.tsx, SonarBoard.tsx, Crosshair.tsx, battleMarks.ts, battleMarks.test.ts}`、`src/components/{TurnBanner.tsx, HitProgress.tsx, EventLog.tsx, eventLogLines.ts, eventLogLines.test.ts, turnBanner.test.ts}`、`src/hooks/{useAttack.ts, useAutoRespond.ts, useClaimTimeout.ts, useCountdown.ts, useCountdown.test.ts}`;改 `src/lib/proofArgs.ts(+toShotProofArg)` + `proofArgs.test.ts`、`src/components/ProofStatus.tsx(+provingLabel/doneLabel 泛化,接受 AutoRespondStatus)`、`src/pages/Game.tsx(BattleAct 原位换全对战幕 + BattleStatus)`。复用 useGame/GameView、BoardGrid(isCellDisabled+overlay)、useProver、storage(loadBoard)、commitment(verifyBoardCommitment/toShotInputs)、ProofStatus、format、errors、abi、boardLogic——均 re-use,未重造。主线程 snarkjs-free(shot 证明在 worker)。

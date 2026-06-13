@@ -18,6 +18,15 @@
 import { useProverProgress } from '../hooks/useProver.ts';
 import type { Circuit, ProveStage } from '../workers/proverProtocol.ts';
 import type { LockFleetStatus } from '../hooks/useLockFleet.ts';
+import type { AutoRespondStatus } from '../hooks/useAutoRespond.ts';
+
+/**
+ * ProofStatus 接受的状态:布阵/加入的 LockFleetStatus 或对战应答的 AutoRespondStatus。
+ * 两者共享 idle/proving/sending/confirming/error 的相位形状;done 字段不同(LockFleet 的 done 带
+ * mode/gameId,AutoRespond 的 done 极简)——本组件只在「无 doneLabel」时才读 LockFleet 的 mode,
+ * 应答幕恒传 doneLabel,故不触达那条字段。
+ */
+type StageStatus = LockFleetStatus | AutoRespondStatus;
 
 /** stage → 人话(本地计算四阶段,§7.5 真实阶段,顺序即发生序)。 */
 const STAGE_LABEL: Record<ProveStage, string> = {
@@ -46,21 +55,50 @@ function bytesLabel(loaded?: number, total?: number): string {
 }
 
 export type ProofStatusProps = {
-  /** 来自 useLockFleet 的离散状态。 */
-  status: LockFleetStatus;
+  /** 来自 useLockFleet 的离散状态,或对战应答的 AutoRespondStatus(共享相位形状,见 StageStatus)。 */
+  status: StageStatus;
   /** 本地计算阶段订阅哪条电路的进度(布阵=board,应答=shot)。默认 board。 */
   circuit?: Circuit;
+  /**
+   * 证明阶段(proving)的标题文案(§7.6 动词化)。省略 → 「正在编译舰队部署证明…」(布阵默认)。
+   * 应答幕传「正在应答 D-7 的炮击…」(reviewer 建议:不再把 respond 模式硬编进本组件,由调用方给文案)。
+   */
+  provingLabel?: string;
+  /**
+   * done 终态文案。省略 → 按 status.mode 给 create/join 文案(布阵默认)。
+   * 应答幕的 respond status 无 mode 字段(见 AutoRespondStatus),故由调用方显式给(如「✓ 已应答 D-7」)。
+   */
+  doneLabel?: string;
 };
+
+/** done 态文案:优先调用方给的 doneLabel;否则按 create/join mode(布阵默认)。 */
+function doneText(status: StageStatus, doneLabel?: string): string {
+  if (doneLabel) return doneLabel;
+  if (status.phase !== 'done') return '';
+  // 仅 LockFleetStatus 的 done 带 mode/gameId(AutoRespondStatus 的 done 极简,但应答幕恒给 doneLabel
+  // 已在上面 return,不达此)。'mode' in status 收窄到 LockFleet 分支,安全读 mode/gameId。
+  if ('mode' in status) {
+    return status.mode === 'create'
+      ? `对局已创建 · 编号 #${status.gameId.toString()}`
+      : `已加入对局 #${status.gameId.toString()}`;
+  }
+  return '';
+}
 
 /**
  * 渲染两阶段状态。idle → null(不占位)。
- *   proving    → 本地计算行:电路标签 + stage + 字节%(useProverProgress)
+ *   proving    → 本地计算行:provingLabel(或布阵默认)+ stage + 字节%(useProverProgress)
  *   sending    → 链上行:提交交易中…(本地签名 → 广播)+ spinner
  *   confirming → 链上行:等待链上确认…(tx 短哈希)+ spinner
- *   done       → 干净成功行(create:对局编号 #N 已就绪;join:已加入 #N)
+ *   done       → 干净成功行(doneLabel 或 create/join 文案)
  *   error      → 错误行(--flare;已是人话/阻断文案)
  */
-export default function ProofStatus({ status, circuit = 'board' }: ProofStatusProps) {
+export default function ProofStatus({
+  status,
+  circuit = 'board',
+  provingLabel,
+  doneLabel,
+}: ProofStatusProps) {
   // 始终调用 hook(规则:hook 不能条件调用);proving 之外该值通常为 null,不渲染本地计算行。
   const progress = useProverProgress(circuit);
 
@@ -79,7 +117,7 @@ export default function ProofStatus({ status, circuit = 'board' }: ProofStatusPr
       >
         <Spinner />
         <span className="font-mono text-xs text-phosphor">
-          正在编译舰队部署证明… {stage}
+          {provingLabel ?? '正在编译舰队部署证明…'} {stage}
           {bytes}
         </span>
       </div>
@@ -106,10 +144,7 @@ export default function ProofStatus({ status, circuit = 'board' }: ProofStatusPr
   }
 
   if (status.phase === 'done') {
-    const label =
-      status.mode === 'create'
-        ? `对局已创建 · 编号 #${status.gameId.toString()}`
-        : `已加入对局 #${status.gameId.toString()}`;
+    const label = doneText(status, doneLabel);
     return (
       <div
         className="border border-phosphor/40 bg-abyss px-3 py-2"
