@@ -49,6 +49,35 @@ const DEMO_CHAIN = anvil;
 export const IS_DEMO = import.meta.env.VITE_DEMO === '1';
 
 /**
+ * P0 connector 的 id —— DEMO_ACCOUNTS[0].label='P0' → connector id `demo-p0`(见下 connect 的
+ * id 模板 `demo-${label.toLowerCase()}`)。AccountSwitcher 据此定位「全新会话默认账户 = P0」的目标。
+ */
+export const P0_CONNECTOR_ID = `demo-${DEMO_ACCOUNTS[0].label.toLowerCase()}`;
+
+/** wagmi 默认 storage 前缀('wagmi'),recentConnectorId 落在 localStorage 键 `wagmi.recentConnectorId`。 */
+export const WAGMI_RECENT_CONNECTOR_KEY = 'wagmi.recentConnectorId';
+
+/**
+ * 本会话是否「全新」(无上个会话持久化的账户选择)。判据:wagmi 的 recentConnectorId 不存在。
+ *
+ * 用途(Task 3.3 review issue 2,配合 issue 1 的 isAuthorized 恒 true):reconnectOnMount 下
+ * wagmi reconnect() 会按 recentConnectorId 把上次激活账户恢复为 current;AccountSwitcher 仅在
+ * 「全新会话」时才强制默认到 P0,**绝不**覆盖 reload 恢复的选择。故需一个不被本会话后续 connect()
+ * 写入污染的判据——recentConnectorId 的「存在与否」正是:存在 = 上个会话选过(reload 恢复),
+ * 不存在 = 全新。只判存在(非空串),不解析 wagmi 序列化格式,对其格式变更稳健。
+ *
+ * 纯函数、显式传 storage(默认 globalThis.localStorage),供单测注入内存 storage;读抛(隐私模式 /
+ * 禁 cookie)按「非全新」(false)处理:不强制 P0 也安全,reconnect 会把数组首位 P0 设为 current。
+ */
+export function isFreshDemoSession(storage: Storage | null | undefined = globalThis.localStorage): boolean {
+  try {
+    return !storage?.getItem(WAGMI_RECENT_CONNECTOR_KEY);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * http(s) rpcUrl → ws(s) url(anvil 同端口双协议)。
  * http→ws、https→wss;其余前缀原样返回(不编造)。纯函数,单独导出供单测。
  */
@@ -109,8 +138,6 @@ function localAccountConnector(acct: DemoAccount) {
       return reader;
     }
 
-    let connected = false;
-
     // EIP-1193 request:签名方法走本地钱包,其余透传只读 client。
     const request: EIP1193RequestFn = (async ({ method, params }) => {
       switch (method) {
@@ -151,7 +178,6 @@ function localAccountConnector(acct: DemoAccount) {
         isReconnecting?: boolean;
         withCapabilities?: withCapabilities | boolean;
       }) {
-        connected = true;
         // accounts 随 withCapabilities 取两种形状(对齐 CreateConnectorFn 的条件类型),demo 固定单账户。
         // 与 mock connector 同法:用 as 收口 TS 无法从运行期 ternary 反推的条件类型。
         const accounts = (
@@ -164,7 +190,7 @@ function localAccountConnector(acct: DemoAccount) {
         return { accounts, chainId: DEMO_CHAIN.id as number };
       },
       async disconnect() {
-        connected = false;
+        // demo 无真实连接态可拆;占位以满足 Connector 接口(切账户走 switchAccount,不 disconnect)。
       },
       async getAccounts() {
         return [acct.address] as readonly Address[];
@@ -176,8 +202,13 @@ function localAccountConnector(acct: DemoAccount) {
         return provider;
       },
       async isAuthorized() {
-        // demo 账户始终授权(无真实登录态),让 reconnect 能恢复。
-        return connected;
+        // demo 账户始终授权:无真实登录态可失效,私钥已在 bundle 内,connect 必然成功。
+        // 必须恒 true(而非内存 connected 标志)——reconnect() 用 isAuthorized 作门:返 false 会
+        // 跳过该 connector,于是 reload 后 wagmi 什么都不恢复、persisted recentConnectorId/current 作废,
+        // AccountSwitcher 只能从零重连(闪一下 + 丢上次选的账户)。恒 true 让 reconnect 按
+        // recentConnectorId 把上次激活的那个账户(P0 或切过的 P1)确定性地恢复回来(见 @wagmi/core
+        // reconnect.js:recentConnectorId 排到首位、首个 isAuthorized 成功者成为 current)。
+        return true;
       },
       onAccountsChanged() {
         // demo 账户固定,不会变;无需处理。
@@ -186,7 +217,6 @@ function localAccountConnector(acct: DemoAccount) {
         // demo 单链,不会变。
       },
       async onDisconnect() {
-        connected = false;
         config.emitter.emit('disconnect');
       },
     };

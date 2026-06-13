@@ -52,6 +52,9 @@ export default function Lobby() {
   const busy = flow.phase === 'proving' || flow.phase === 'sending' || flow.phase === 'confirming';
 
   async function onCreate() {
+    // 仅 demo 构建可走此流程(需本地链 + 账户 + deployment)。按钮已被 isConnected 门控,
+    // 这里再显式早退一道,把「非 demo 不可用」写成代码意图而非隐含依赖按钮 disabled。
+    if (!IS_DEMO) return;
     if (!address || !publicClient) {
       setFlow({ phase: 'error', message: '尚未连接账户或链客户端未就绪。' });
       return;
@@ -70,6 +73,14 @@ export default function Lobby() {
       const commitment = computeCommitment(FIXED_BOARD, salt);
 
       // 3. 先落 pending(§8:棋盘即资产,上链前先存;gameId 未知)。写失败抛 StorageWriteError。
+      //
+      // ⚠️ 交接给 3.4(真 create + join):pending 键 = (chainId, contract, address),**不含 gameId**
+      //    (见 storage.ts pendingKey)。故同一账户在同一合约上只有「一个」pending 槽——后写覆盖先写
+      //    (last-writer-wins)。当前只有 create 一条路、且串行,无冲突;但 3.4 让一个账户既能 create
+      //    又能 join(甚至并发多局未决)时,create 的待定布阵与 join 的待定布阵会争这同一个槽,互相覆盖。
+      //    3.4 必须决定:create / join 是否各用一个独立 pending 键(如键里加 'create'/'join' 或局标识)。
+      //    另:promotePending 只是「盲取当前 pending 迁到 gameId」——它无条件信任此刻 pending 槽里的就是
+      //    本次交易对应的布阵;一旦上面的槽被并发流程串改,promote 会把错的布阵迁到正式键。一并在 3.4 收口。
       savePending(deployment.chainId, deployment.battleship, address, {
         ships: FIXED_BOARD,
         salt,
