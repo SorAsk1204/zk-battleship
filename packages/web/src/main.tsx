@@ -16,16 +16,21 @@ import '@fontsource/ibm-plex-mono/600.css';
 import './styles/index.css';
 
 import App from './App.tsx';
+import { ToastProvider } from './components/Toast.tsx';
 import { queryClient, wagmiConfig } from './lib/wagmi.ts';
 
 // WagmiProvider(链/连接器/transport)→ QueryClientProvider(wagmi v2 peer,缓存读链调用)
-// → Router → App。顺序:wagmi 在外,query 次之,二者必须包住所有用 wagmi/query hook 的组件。
+// → Router → ToastProvider(页内 toast,§7.5/7.6 替代原生 alert)→ App。
+// 顺序:wagmi 在外,query 次之,二者必须包住所有用 wagmi/query hook 的组件;ToastProvider 包住 App
+// 让任意页面经 useToast() 推消息(PersistenceBanner 导入失败等)。
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <WagmiProvider config={wagmiConfig}>
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
-          <App />
+          <ToastProvider>
+            <App />
+          </ToastProvider>
         </BrowserRouter>
       </QueryClientProvider>
     </WagmiProvider>

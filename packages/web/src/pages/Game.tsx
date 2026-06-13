@@ -21,11 +21,11 @@
  *   - act='finish'(Finished/Cancelled)→ 最小占位(你赢了 / 对局已取消 / 对手获胜)+ 返回大厅。
  */
 import { useEffect, useReducer, useState, type ReactNode } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAccount } from 'wagmi';
 import { shortAddr } from '../lib/format.ts';
 import { loadDeployment, type Address, type Deployment } from '../lib/contracts.ts';
-import { loadBoard, type BoardRecord } from '../lib/storage.ts';
+import { loadBoard, removeBoard, type BoardRecord } from '../lib/storage.ts';
 import type { Board } from '../lib/boardLogic.ts';
 import { randomSalt } from '../lib/salt.ts';
 import { Phase, type GameView } from '../hooks/gameView.ts';
@@ -38,6 +38,7 @@ import { useClaimTimeout } from '../hooks/useClaimTimeout.ts';
 import { useCountdown } from '../hooks/useCountdown.ts';
 import ProofStatus from '../components/ProofStatus.tsx';
 import PostLockPanel from '../components/PostLockPanel.tsx';
+import PersistenceBanner from '../components/PersistenceBanner.tsx';
 import TurnBanner from '../components/TurnBanner.tsx';
 import HitProgress from '../components/HitProgress.tsx';
 import EventLog from '../components/EventLog.tsx';
@@ -46,6 +47,12 @@ import PlacementBoard from '../components/board/PlacementBoard.tsx';
 import OwnBoard from '../components/board/OwnBoard.tsx';
 import SonarBoard from '../components/board/SonarBoard.tsx';
 import { cellIdx } from '../components/board/battleMarks.ts';
+import {
+  computeBattleReport,
+  formatDuration,
+  formatRate,
+  reasonText,
+} from './battleReport.ts';
 import {
   allPlaced,
   initialPlacement,
@@ -103,7 +110,7 @@ export default function Game() {
     <Shell gameId={idParam}>
       {view.act === 'placement' && <PlacementAct id={id} view={view} />}
       {view.act === 'battle' && <BattleAct id={id} view={view} eventLog={eventLog} />}
-      {view.act === 'finish' && <FinishAct view={view} />}
+      {view.act === 'finish' && <FinishAct id={id} view={view} eventLog={eventLog} />}
     </Shell>
   );
 }
@@ -116,16 +123,21 @@ export default function Game() {
  *   否则(非 P0、p1 尚空):join 模式布阵。
  */
 function PlacementAct({ id, view }: { id: number; view: GameView }) {
-  if (view.myIdx === 0) return <P0Waiting id={id} />;
+  if (view.myIdx === 0) return <P0Waiting id={id} view={view} />;
   return <JoinPlacement id={id} />;
 }
 
-/** P0 等待对手:从 storage 还原本局棋盘 → PostLockPanel;缺失则最小提示 + 等待文案(完整恢复是 3.8)。 */
-function P0Waiting({ id }: { id: number }) {
+/**
+ * P0 等待对手:从 storage 还原本局棋盘 → PostLockPanel;缺失 / 承诺不符 → PersistenceBanner(§8 守卫
+ * + 导入恢复,3.8)+ 等待文案。导入成功(onImported)→ reloadVersion+1 重读棋盘 → 立刻显出上锁盘。
+ */
+function P0Waiting({ id, view }: { id: number; view: GameView }) {
   const { address } = useAccount();
   const [deployment, setDeployment] = useState<Deployment | null>(null);
   const [record, setRecord] = useState<BoardRecord | null>(null);
   const [loaded, setLoaded] = useState(false);
+  // 导入恢复后重读 storage 的版本号(PersistenceBanner.onImported 触发)。
+  const [reloadVersion, setReloadVersion] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -142,7 +154,7 @@ function P0Waiting({ id }: { id: number }) {
     return () => {
       alive = false;
     };
-  }, [id, address]);
+  }, [id, address, reloadVersion]);
 
   // 还没读完 storage / deployment:轻提示(极短,本地同步读 localStorage 通常瞬间完成)。
   if (!loaded) {
@@ -169,18 +181,25 @@ function P0Waiting({ id }: { id: number }) {
     );
   }
 
-  // 棋盘缺失(换浏览器 / 清过存储):最小提示 + 等待文案(完整持久化横幅 + 导入恢复是 3.8)。
+  // 棋盘缺失(换浏览器 / 清过存储):§8 持久化横幅(导入恢复)+ 等待文案。
   return (
     <div className="space-y-3" data-testid="p0-waiting-no-board">
+      {deployment && address && (
+        <PersistenceBanner
+          chainId={deployment.chainId}
+          contract={deployment.battleship}
+          gameId={BigInt(id)}
+          address={address}
+          myCommitment={view.myCommitment}
+          onImported={() => setReloadVersion((v) => v + 1)}
+        />
+      )}
       <div className="border border-grid bg-console px-4 py-4">
         <p className="font-mono text-sm text-phosphor">声呐搜索对手中…</p>
         <p className="mt-1 font-mono text-xs text-foam">
           把对局编号 <span className="font-bold text-flare">#{id}</span> 发给你的对手。
         </p>
       </div>
-      <p className="font-mono text-xs text-mist" data-testid="board-missing-note">
-        本地棋盘缺失,无法展示布局(完整恢复 / 导入备份见结算前的持久化提示)。
-      </p>
     </div>
   );
 }
@@ -297,6 +316,9 @@ function BattleAct({
   // 棋盘是否已读完(deployment 取到 + loadBoard 跑过)。用于「本地棋盘缺失」提示只在读完后显示,
   // 不在 deployment 异步加载期间(myBoard 暂为 null)闪一下误报。
   const [boardLoaded, setBoardLoaded] = useState(false);
+  // 导入恢复后重读 storage 的版本号(PersistenceBanner.onImported 触发):导入棋盘 → 重读 → OwnBoard 立刻显出布局
+  // (同时 useAutoRespond 经 clearInFlight 的 re-fire 信号自动补应答,无需重载)。
+  const [boardReloadVersion, setBoardReloadVersion] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -320,7 +342,8 @@ function BattleAct({
       alive = false;
     };
     // address 变(切账户)→ 重读我的棋盘(同一局换立场,棋盘也换;§7.1 视角翻转)。
-  }, [id, address, isPlayer]);
+    // boardReloadVersion 变(导入恢复)→ 重读(显出刚导入的棋盘)。
+  }, [id, address, isPlayer, boardReloadVersion]);
 
   // 预热 shot 证明工件(把 zkey 拉取藏在开战前,自动应答时少等网络)。
   useEffect(() => {
@@ -340,6 +363,20 @@ function BattleAct({
 
   return (
     <section className="space-y-4" data-testid="battle-act">
+      {/* §8 持久化守卫:玩家本地棋盘缺失 / 与链上承诺不符 → 顶部横幅 + 导入恢复。导入成功 → 重读棋盘
+          (OwnBoard 显出布局)+ clearInFlight 让欠的应答自动 re-fire(无需重载,3.7 Rec 1 闭环)。
+          只玩家挂(myCommitment 有值才守卫;旁观 myCommitment undefined → 横幅自隐)。 */}
+      {isPlayer && deployment && address && (
+        <PersistenceBanner
+          chainId={deployment.chainId}
+          contract={deployment.battleship}
+          gameId={BigInt(id)}
+          address={address}
+          myCommitment={view.myCommitment}
+          onImported={() => setBoardReloadVersion((v) => v + 1)}
+        />
+      )}
+
       <div className="flex items-center justify-between">
         <h1 className="font-display text-2xl font-bold text-phosphor">作战室 · #{id}</h1>
         <span className="font-mono text-[11px] text-mist" data-testid="my-perspective">
@@ -507,35 +544,158 @@ function BattleStatus({
   );
 }
 
-// ───────────────────────────── finish 幕(3.6 最小占位)─────────────────────────────
+// ───────────────────────────── finish 幕(3.8 完整结算幕)─────────────────────────────
 
-/** finish 幕最小占位(3.8 实现完整结算幕 + 持久化闭环)。 */
-function FinishAct({ view }: { view: GameView }) {
+/**
+ * finish 幕(结算,§7.3:展示战报[总回合、命中率、用时] + 「再来一局」回到大厅)。
+ *
+ * 战报全部从 eventLog + view 派生(computeBattleReport,纯函数已单测;无新链上读、无新乐观态)。
+ * 视觉**功能版**:静态 outcome 色 accent(胜 --phosphor / 负 --flare / 取消 --mist),**无** §7.3 的整屏
+ * 扫亮/染红动画(那是 M4)。
+ *
+ * 存储清理(§8「Finished 后该键可清理」):进 finish 即清掉**我自己**这局的正式键(removeBoard,
+ * 只清我的、不碰对手的)。时机选「进 finish 一次」而非「点再来一局」——一进结算棋盘就不再需要(应答
+ * 阶段已过),且若复用同一 gameId 的下一局误读到陈旧棋盘会出错(3.4/3.5 的 stale-cross-session 教训)。
+ * 故结算幕**不**展示己方盘、**不**挂 PersistenceBanner(棋盘已主动清,挂了反而恒报缺失自相矛盾);
+ * 只呈现战报(战报不依赖棋盘 ships/salt,只依赖事件 + 链上 hits)。
+ */
+function FinishAct({ id, view, eventLog }: { id: number; view: GameView; eventLog: GameLogEntry[] }) {
+  const { address } = useAccount();
+  const navigate = useNavigate();
+  const report = computeBattleReport(eventLog, view);
+  const isPlayer = view.isPlayer;
+
+  // 进 finish 一次:清掉我自己这局的棋盘键(§8;只我的、不碰对手)。deployment 异步取到 + 我是玩家才清。
+  // 依赖 [id, address]:换账户(切到另一玩家视角)也各自清自己的键。observer 不清(没有「我的键」)。
+  useEffect(() => {
+    if (!isPlayer || !address) return;
+    let alive = true;
+    void loadDeployment()
+      .then((d) => {
+        if (!alive) return;
+        removeBoard(d.chainId, d.battleship, id, address);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [id, address, isPlayer]);
+
+  // outcome 文案 + accent 色(§7.3 胜/负/取消)。
   const outcome = view.isCancelled
-    ? '对局已取消'
+    ? { headline: '对局已取消', accent: 'mist' as const }
     : view.iWon
-      ? '你赢了'
-      : view.isPlayer
-        ? '对手获胜'
-        : view.winner
-          ? `${shortAddr(view.winner)} 获胜`
-          : '对局结束';
+      ? { headline: '你赢了', accent: 'phosphor' as const }
+      : isPlayer
+        ? { headline: '对手获胜', accent: 'flare' as const }
+        : {
+            headline: view.winner ? `对局结束 · 胜者 ${shortAddr(view.winner)}` : '对局结束',
+            accent: 'phosphor' as const,
+          };
+
+  // reason 人话(视角相关:胜/负措辞不同;observer 客观)。iWon 对玩家给 true/false,observer 给 undefined。
+  // cancelled 时 headline 已是「对局已取消」,reasonText('cancelled') 同文,故取消态不再重复显示 reason。
+  const iWonArg = isPlayer ? view.iWon : undefined;
+  const reason = view.isCancelled ? '' : reasonText(report.finishReason, iWonArg);
+
+  // accent → 边框/标题色 class(锁定调色板,直角 §7.2)。
+  const accentBorder =
+    outcome.accent === 'phosphor'
+      ? 'border-phosphor/60'
+      : outcome.accent === 'flare'
+        ? 'border-flare/60'
+        : 'border-mist/40';
+  const accentText =
+    outcome.accent === 'phosphor'
+      ? 'text-phosphor'
+      : outcome.accent === 'flare'
+        ? 'text-flare'
+        : 'text-mist';
+
   return (
     <section className="space-y-5" data-testid="finish-act">
       <div className="flex items-center justify-between">
-        <h1 className="font-display text-2xl font-bold text-phosphor">对局结束</h1>
-        <span className="border border-grid px-2 py-0.5 font-mono text-[11px] text-mist">
-          结算 · Task 3.8 实现
+        <h1 className="font-display text-2xl font-bold text-phosphor">作战结算 · #{id}</h1>
+        <span className="font-mono text-[11px] text-mist" data-testid="my-perspective">
+          {view.myIdx === 0 ? '视角 P0' : view.myIdx === 1 ? '视角 P1' : '旁观'}
         </span>
       </div>
-      <div className="border border-phosphor/40 bg-abyss px-4 py-6" data-testid="outcome">
-        <p className="font-display text-xl text-phosphor">{outcome}</p>
-        <p className="mt-2 font-mono text-xs text-mist">
-          我方战损 {view.myHits ?? '—'} / 17 · 对手战损 {view.opponentHits ?? '—'} / 17
+
+      {/* outcome 头条 + reason(静态 accent;扫屏动画是 M4)。 */}
+      <div className={`border ${accentBorder} bg-abyss px-5 py-6`} data-testid="outcome">
+        <p className={`font-display text-2xl font-bold ${accentText}`} data-accent={outcome.accent}>
+          {outcome.headline}
         </p>
+        {reason && <p className="mt-1 font-mono text-xs text-mist" data-testid="outcome-reason">{reason}</p>}
       </div>
-      <BackToLobby className="inline-block" />
+
+      {/* 战报:总回合 / 用时 / 命中率(双方,视角相对)+ 双方最终战损(HitProgress 复用)。 */}
+      <div className="space-y-4" data-testid="battle-report">
+        <h2 className="font-mono text-xs uppercase tracking-wide text-mist">战报</h2>
+
+        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+          <Stat label="总回合" value={String(report.rounds)} testid="stat-rounds" />
+          <Stat label="用时" value={formatDuration(report.durationSec)} testid="stat-duration" />
+          <Stat
+            label={isPlayer ? '我方命中率' : 'P0 命中率'}
+            value={formatRate(report.mine.rate)}
+            sub={`${report.mine.hits}/${report.mine.fired}`}
+            testid="stat-my-rate"
+          />
+          <Stat
+            label={isPlayer ? '对手命中率' : 'P1 命中率'}
+            value={formatRate(report.opponent.rate)}
+            sub={`${report.opponent.hits}/${report.opponent.fired}`}
+            testid="stat-opp-rate"
+          />
+        </div>
+
+        {/* 双方最终战损(0–17;复用对战幕 HitProgress)。observer 用 P0/P1 标签。 */}
+        <HitProgress
+          myHits={report.myHits}
+          opponentHits={report.opponentHits}
+          p0Label={isPlayer ? undefined : 'P0'}
+          p1Label={isPlayer ? undefined : 'P1'}
+        />
+
+        {/* 逐条作战记录(复用 EventLog;结算回看整局流水)。 */}
+        <EventLog entries={eventLog} myIdx={view.myIdx} />
+      </div>
+
+      {/* 「再来一局」→ 回大厅(§7.3)。存储清理已在进 finish 时做(见上 effect),此处只导航。 */}
+      <div className="flex items-center gap-4">
+        <button
+          type="button"
+          data-testid="play-again"
+          onClick={() => navigate('/')}
+          className="border border-phosphor bg-grid px-4 py-2 font-display text-sm font-bold text-phosphor hover:bg-grid/80"
+        >
+          再来一局
+        </button>
+        <BackToLobby />
+      </div>
     </section>
+  );
+}
+
+/** 单个统计块(font-mono 数字 + 标签 + 可选副值)。结算战报用,直角 1px 边框(§7.2)。 */
+function Stat({
+  label,
+  value,
+  sub,
+  testid,
+}: {
+  label: string;
+  value: string;
+  sub?: string;
+  testid: string;
+}) {
+  return (
+    <div className="border border-grid bg-console px-3 py-2" data-testid={testid}>
+      <p className="font-mono text-[10px] uppercase tracking-wide text-mist">{label}</p>
+      <p className="mt-0.5 font-mono text-xl font-bold text-foam">{value}</p>
+      {sub && <p className="font-mono text-[10px] text-mist">{sub}</p>}
+    </div>
   );
 }
 

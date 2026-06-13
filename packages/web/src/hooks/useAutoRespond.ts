@@ -27,7 +27,7 @@
  * 纪律:不 import snarkjs(shot 证明经 useProver 走 worker,主线程 snarkjs-free);错误经 mapContractError
  * 人话化;命令式 await 直线(同 useLockFleet/useAttack)。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { usePublicClient, useWriteContract } from 'wagmi';
 import { battleshipAbi } from '../lib/abi.ts';
 import { verifyBoardCommitment, toShotInputs } from '../lib/commitment.ts';
@@ -71,6 +71,58 @@ function flightKey(chainId: number, gameId: bigint, x: number, y: number): strin
   return `${chainId}:${gameId.toString()}:${x},${y}`;
 }
 
+/** 某局的键前缀(chainId:gameId:),clearInFlight 据此清掉该局所有在途/阻断键。 */
+function gamePrefix(chainId: number, gameId: bigint): string {
+  return `${chainId}:${gameId.toString()}:`;
+}
+
+/**
+ * 「释放信号」外部 store(useSyncExternalStore 订阅)—— clearInFlight 的另一半。
+ *
+ * 为什么光清 inFlight Set 不够(3.7 Rec 1 的真正闭环):自动应答的触发 effect 依赖
+ * [shouldRespond, px, py, pcoord, runRespond]。导入棋盘后这些**全不变**(同一 pendingShot、同一 view),
+ * 仅 module 级 inFlight Set 内容变了——而 Set 的增删不触发任何 React 重渲染,effect 不会重跑,
+ * blocked 态会一直挂着(这正是 3.7「需重载页面」的根因)。
+ *
+ * 故 clearInFlight 不仅 delete 键,还 bump 一个 module 级版本号并 emit;每个 useAutoRespond 实例用
+ * useSyncExternalStore 订阅该版本号,版本一变即重渲染、并把版本号列进触发 effect 依赖 → effect 重评估
+ * → shouldRespond 仍 true 且键已释放 → runRespond 重跑 → 无需重载自动 re-fire(§10 + 3.7 Rec 1 闭环)。
+ */
+let releaseVersion = 0;
+const releaseListeners = new Set<() => void>();
+function subscribeRelease(cb: () => void): () => void {
+  releaseListeners.add(cb);
+  return () => releaseListeners.delete(cb);
+}
+function getReleaseVersion(): number {
+  return releaseVersion;
+}
+function emitRelease(): void {
+  releaseVersion += 1;
+  for (const cb of releaseListeners) cb();
+}
+
+/**
+ * 清掉某局的全部 inFlight 键(在途 + 阻断占的键)并 emit 释放信号(供 PersistenceBanner 导入成功后调用,
+ * 闭合 3.7 Rec 1:导入棋盘 → 释放 blocked 占的键 + 触发 effect 重评估 → 自动 re-fire,**无需重载**)。
+ *
+ * 清「该局所有键」而非「具体某炮键」:导入时调用方未必知道当前 pending 是哪一炮(blocked 态下
+ * runRespond 早 return,respondingCoord 已被相位收口清空);按 gameId 前缀清是安全的——同一局同一时刻
+ * 至多一炮在途,清掉它即可。跨局键(别的 gameId)不受影响(前缀不匹配)。
+ *
+ * @param chainId 链 id(键的第一段)
+ * @param gameId  对局 id(键的第二段)
+ */
+export function clearInFlight(chainId: number, gameId: bigint): void {
+  const prefix = gamePrefix(chainId, gameId);
+  for (const key of [...inFlight]) {
+    if (key.startsWith(prefix)) inFlight.delete(key);
+  }
+  // 即便没有键被删(理论不达:导入时通常正 blocked、键在),也 emit——让订阅的实例重评估触发条件
+  // (导入恢复后棋盘已可读,effect 重跑会走通 prove/respond)。
+  emitRelease();
+}
+
 export type UseAutoRespondArgs = {
   view: GameView;
   gameId: bigint;
@@ -98,6 +150,10 @@ export function useAutoRespond({
   const { writeContractAsync } = useWriteContract();
   const [status, setStatus] = useState<AutoRespondStatus>({ phase: 'idle' });
   const [respondingCoord, setRespondingCoord] = useState<string | null>(null);
+
+  // 释放信号订阅(clearInFlight emit 时 +1):PersistenceBanner 导入棋盘成功 → clearInFlight → 本值变 →
+  // 触发 effect 把它列进依赖 → 重评估触发条件 → 已释放键 + 棋盘已可读 → 自动 re-fire(无需重载,3.7 Rec 1 闭环)。
+  const release = useSyncExternalStore(subscribeRelease, getReleaseVersion, getReleaseVersion);
 
   // 当前已在本组件实例内跑的键(避免同实例重入;module inFlight 是跨实例的总闸)。
   const localRunningRef = useRef<string | null>(null);
@@ -180,12 +236,15 @@ export function useAutoRespond({
     [publicClient, writeContractAsync, contract, chainId, address, gameId, view.myCommitment, view.myIdx],
   );
 
-  // 触发 effect:满足条件即自动开跑(去重在 runRespond 内)。依赖「这一炮的坐标基元 + 跑函数」——
-  // 不依赖 pendingShot 对象身份(否则每次无关 refetch 都重跑),只在格变(px/py)或函数变时重跑。
+  // 触发 effect:满足条件即自动开跑(去重在 runRespond 内)。依赖「这一炮的坐标基元 + 跑函数 + 释放信号」——
+  // 不依赖 pendingShot 对象身份(否则每次无关 refetch 都重跑),只在格变(px/py)、函数变、或 clearInFlight
+  // 释放信号(release)变时重跑。release 变 = PersistenceBanner 导入了棋盘并清了键 → 此处重评估即 re-fire
+  // (此时 shouldRespond 仍 true、键已释放、棋盘已可读,runRespond 一路走通 prove/respond,无需重载)。
   useEffect(() => {
     if (!shouldRespond || px < 0 || py < 0) return;
     void runRespond(px, py, pcoord);
-  }, [shouldRespond, px, py, pcoord, runRespond]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps —— release 是 clearInFlight 的 re-fire 触发器(故意列入)。
+  }, [shouldRespond, px, py, pcoord, runRespond, release]);
 
   // 相位收口:离开「待我应答」后,把 done/blocked/error 的残留状态条复位为 idle(下一炮重新开始),
   // 但保留 proving/sending/confirming(在途的不打断,等它自己 settle)。
