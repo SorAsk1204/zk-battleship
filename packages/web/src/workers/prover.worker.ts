@@ -16,10 +16,12 @@
  * 内存形态:wasm/zkey 以 Uint8Array 缓存,经 fastfile 的 { type:'mem', data } 喂给 snarkjs,
  * 让其从内存读而非反复走网络(preload 后再 prove 即零网络)。
  */
+import { formatProofCalldata } from '@zk-battleship/circuits/proof';
 import * as snarkjs from 'snarkjs';
 import type {
   Circuit,
   Groth16Proof,
+  ProofCalldataHex,
   ProveReq,
   ProveRes,
   ProveStage,
@@ -133,12 +135,16 @@ async function ensureZkey(circuit: Circuit, id: number): Promise<Uint8Array> {
  *     完成后其 .data 持有 witness 字节(memFile.close 已 slice 到真实长度);
  *   groth16.prove({type:'mem',data:zkey}, wtnsMem) — 把同一 wtnsMem 喂进去,返回 {proof, publicSignals}。
  * 这正是 fullProve 内部做的事(它私建 {type:'mem'} 串起两步),此处显式拆开只为插入两段进度。
+ *
+ * 出证明后立即在 worker 内 formatProofCalldata(D3 唯一实现,走 snarkjs exportSolidityCallData),
+ * 把合约就绪的 {a,b,c,pubSignals} bigint 转 0x-hex 串(跨 postMessage 形态,见 ProofCalldataHex)。
+ * 主线程零 snarkjs 依赖即可拿到 calldata,BigInt() 还原后直接喂 writeContract。
  */
 async function runProve(
   circuit: Circuit,
   inputs: Record<string, unknown>,
   id: number,
-): Promise<{ proof: Groth16Proof; publicSignals: string[] }> {
+): Promise<{ proof: Groth16Proof; publicSignals: string[]; calldata: ProofCalldataHex }> {
   const wasm = await ensureWasm(circuit, id);
   const zkey = await ensureZkey(circuit, id);
 
@@ -151,7 +157,24 @@ async function runProve(
   post({ id, type: 'progress', circuit, stage: 'prove' });
   const { proof, publicSignals } = await snarkjs.groth16.prove({ type: 'mem', data: zkey }, wtns);
 
-  return { proof: proof as Groth16Proof, publicSignals };
+  // 合约 calldata:formatProofCalldata 产出 bigint(a/c len2、b 2×2、pubSignals)→ 转 0x-hex 串
+  const cd = await formatProofCalldata(proof, publicSignals);
+  const calldata: ProofCalldataHex = {
+    a: [toHex(cd.a[0]), toHex(cd.a[1])],
+    b: [
+      [toHex(cd.b[0][0]), toHex(cd.b[0][1])],
+      [toHex(cd.b[1][0]), toHex(cd.b[1][1])],
+    ],
+    c: [toHex(cd.c[0]), toHex(cd.c[1])],
+    pubSignals: cd.pubSignals.map(toHex),
+  };
+
+  return { proof: proof as Groth16Proof, publicSignals, calldata };
+}
+
+/** bigint → 0x-hex 串(无符号;calldata 各域恒为非负域元素)。 */
+function toHex(v: bigint): string {
+  return `0x${v.toString(16)}`;
 }
 
 ctx.onmessage = async (e: MessageEvent<ProveReq>) => {
@@ -165,12 +188,12 @@ ctx.onmessage = async (e: MessageEvent<ProveReq>) => {
       return;
     }
     // prove
-    const { proof, publicSignals } = await runProve(
+    const { proof, publicSignals, calldata } = await runProve(
       req.circuit,
       req.inputs as Record<string, unknown>,
       req.id,
     );
-    post({ id: req.id, type: 'done', proof, publicSignals });
+    post({ id: req.id, type: 'done', proof, publicSignals, calldata });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     post({ id: req.id, type: 'error', message });

@@ -12,7 +12,18 @@
  *   - id 单调自增,跨 test 不复用,无需手动清。
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { ProveRes } from '../workers/proverProtocol.ts';
+import type { ProofCalldataHex, ProveRes } from '../workers/proverProtocol.ts';
+
+/** done 消息的 calldata 占位(Task 3.3:done 现带合约就绪 hex calldata)。形状即合约 ABI(board=1 pubSignal)。 */
+const CALLDATA_STUB: ProofCalldataHex = {
+  a: ['0x1', '0x2'],
+  b: [
+    ['0x3', '0x4'],
+    ['0x5', '0x6'],
+  ],
+  c: ['0x7', '0x8'],
+  pubSignals: ['0x9'],
+};
 
 // ── MockWorker:捕获最近构造的实例,暴露 handlers 与 postMessage 记录 ──────────
 class MockWorker {
@@ -118,7 +129,7 @@ describe('I1 progress 按 circuit 分桶', () => {
     const bId = (w.posted[1] as { id: number }).id;
     w.emit({ id: bId, type: 'progress', circuit: 'board', stage: 'prove' });
     // 旧 A 现在 done:不得清掉 B 占用的桶
-    w.emit({ id: a, type: 'done', proof: {} as never, publicSignals: [] });
+    w.emit({ id: a, type: 'done', proof: {} as never, publicSignals: [], calldata: CALLDATA_STUB });
     expect(mod.peekProgress('board')!.stage).toBe('prove');
   });
 });
@@ -135,8 +146,13 @@ describe('I2 promise 收口', () => {
       type: 'done',
       proof: { pi_a: ['1'] } as never,
       publicSignals: ['1', '2'],
+      calldata: CALLDATA_STUB,
     });
-    await expect(p).resolves.toEqual({ proof: { pi_a: ['1'] }, publicSignals: ['1', '2'] });
+    await expect(p).resolves.toEqual({
+      proof: { pi_a: ['1'] },
+      publicSignals: ['1', '2'],
+      calldata: CALLDATA_STUB,
+    });
     expect(mod.peekProgress('board')).toBeNull();
   });
 
@@ -179,7 +195,7 @@ describe('I2 promise 收口', () => {
     const p = mod.prove('board', {});
     const w = worker();
     const id = (w.posted[0] as { id: number }).id;
-    w.emit({ id, type: 'done', proof: {} as never, publicSignals: [] });
+    w.emit({ id, type: 'done', proof: {} as never, publicSignals: [], calldata: CALLDATA_STUB });
     await expect(p).resolves.toBeDefined();
     // 推进超过超时:不应有未处理 rejection / 二次结算(promise 已 settle)
     await vi.advanceTimersByTimeAsync(120_000);

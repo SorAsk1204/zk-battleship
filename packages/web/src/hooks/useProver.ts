@@ -23,13 +23,23 @@ import { useSyncExternalStore } from 'react';
 import type {
   Circuit,
   Groth16Proof,
+  ProofCalldataHex,
   ProgressSnapshot,
   ProveInputs,
   ProveReq,
   ProveRes,
 } from '../workers/proverProtocol.ts';
 
-export type ProveResult = { proof: Groth16Proof; publicSignals: string[] };
+/**
+ * prove 的结果。proof/publicSignals 是原始 Groth16 对象(DevProve 的 verify、3.7 结果读取用);
+ * calldata 是合约就绪的 hex 形态(Task 3.3:worker 已用 formatProofCalldata 格式化好,主线程
+ * BigInt() 还原后直接喂 writeContract,见 toBoardProofArgs)。
+ */
+export type ProveResult = {
+  proof: Groth16Proof;
+  publicSignals: string[];
+  calldata: ProofCalldataHex;
+};
 
 /**
  * 单请求超时(ms)。证明实测亚秒级(board 本地计算 ~700ms),60s 是给「module worker 加载
@@ -150,7 +160,11 @@ function getWorker(): Worker {
       case 'done': {
         const entry = settle(msg.id);
         if (entry && entry.kind === 'prove') {
-          entry.resolve({ proof: msg.proof, publicSignals: msg.publicSignals });
+          entry.resolve({
+            proof: msg.proof,
+            publicSignals: msg.publicSignals,
+            calldata: msg.calldata,
+          });
         }
         emitChange();
         return;

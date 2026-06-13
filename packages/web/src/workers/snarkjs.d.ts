@@ -40,5 +40,11 @@ declare module 'snarkjs' {
     ): Promise<{ proof: unknown; publicSignals: string[] }>;
     /** dev 校验用:vkey + publicSignals + proof → 是否有效。 */
     verify(vkey: unknown, publicSignals: string[], proof: unknown): Promise<boolean>;
+    /**
+     * 出 Solidity 风格 calldata 字符串(Task 3.3:worker 经 @circuits/proof 的 formatProofCalldata
+     * 调用)。本 .d.ts 的模块声明对整个 web tsc 图生效,而 prover.worker 现 import 了
+     * @zk-battleship/circuits/proof(其内部用此方法),故此处也须声明,否则该文件类型解析失败。
+     */
+    exportSolidityCallData(proof: unknown, publicSignals: string[]): Promise<string>;
   };
 }

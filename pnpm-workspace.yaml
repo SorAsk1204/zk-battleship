@@ -7,6 +7,12 @@ allowBuilds:
   # wasm 实现不需要它,显式拒绝构建,避免依赖本机 MSVC(见 DECISIONS.md Task 0.2)
   blake-hash: false
   esbuild: true
+  # wagmi → walletconnect 传递依赖的可选原生加速包(ws 的 bufferutil/utf-8-validate、
+  # keccak 原生绑定)。本仓 demo 用自建 local-account connector,不走 walletconnect 路径;
+  # 三者均有纯 JS 回退,显式拒绝构建避免依赖本机 MSVC(同 blake-hash,见 DECISIONS Task 0.2)。
+  bufferutil: false
+  keccak: false
+  utf-8-validate: false
 
 # 显式锁定 pnpm 默认布局:circom 编译用 `-l node_modules` 依赖 circomlib
 # 以 junction 形式出现在 packages/circuits/node_modules,改 hoisted 会破坏。

@@ -32,6 +32,25 @@ export type Groth16Proof = {
  */
 export type ProveInputs = Record<string, string | string[] | string[][]>;
 
+/**
+ * 合约就绪的 Groth16 calldata,**hex 字符串形态**(Task 3.3)。
+ *
+ * 为什么在 worker 里产出:合约要的是 BoardProof{a,b,c,pubSignals}(含 pi_b limb 交换),其唯一实现
+ * formatProofCalldata 走 snarkjs 的 exportSolidityCallData(D3:禁止手写 limb 交换)。snarkjs 只活在
+ * worker(浏览器安全纪律 3.1/D2),故格式化也必须在 worker 做——主线程不得 import @circuits/proof。
+ *
+ * 为什么 hex 字符串而非 bigint:formatProofCalldata 产出 bigint,但 (a) 跨 postMessage 虽然 structured
+ * clone 支持 bigint,本协议既有约定是「统一 string 过线最稳」(见 ProveInputs);(b) 用 0x-hex 无歧义,
+ * 主线程拿到后在 writeContract 前一刻 BigInt() 还原即可(viem 合约入参要 bigint)。
+ * 形状锁死合约 ABI:a/c 各 2 项,b 是 2×2,pubSignals 是 board=1 / shot=4 项(均 0x-hex 串)。
+ */
+export type ProofCalldataHex = {
+  a: [string, string];
+  b: [[string, string], [string, string]];
+  c: [string, string];
+  pubSignals: string[];
+};
+
 /** main → worker 请求。preload 只拉取并缓存 wasm+zkey(后续 prove 免拉取);prove 真正出证明。 */
 export type ProveReq =
   | { id: number; type: 'preload'; circuit: Circuit }
@@ -45,7 +64,9 @@ export type ProveStage = 'fetch-wasm' | 'fetch-zkey' | 'witness' | 'prove';
  * - progress:带 circuit(每个 post 点 worker 都已知电路),让上层能按电路分桶并渲染
  *   「正在编译 board 证明 · fetch-zkey 61%」。loaded/total 仅 fetch-* 阶段有(来自 Content-Length);
  *   witness/prove 不带字节数。
- * - done:仅 prove 请求产出(带 proof/publicSignals)。
+ * - done:仅 prove 请求产出。带三样:proof / publicSignals(DevProve 的 main 线程 verify 与
+ *   3.7 结果读取需要原始证明对象)+ calldata(合约就绪的 hex 形态,Task 3.3,主线程 BigInt() 还原后
+ *   直接喂 writeContract;格式化在 worker 完成因 snarkjs 只能在 worker——见 ProofCalldataHex 注释)。
  * - preloaded:preload 请求完成(只拉满 wasm+zkey 入缓存,无 proof);与 done 分开,让 id 路由
  *   能干净区分「预热完成」与「出证完成」。
  * - error:任何抛错统一收口于此,带可读 message。
@@ -59,7 +80,13 @@ export type ProveRes =
       loaded?: number;
       total?: number;
     }
-  | { id: number; type: 'done'; proof: Groth16Proof; publicSignals: string[] }
+  | {
+      id: number;
+      type: 'done';
+      proof: Groth16Proof;
+      publicSignals: string[];
+      calldata: ProofCalldataHex;
+    }
   | { id: number; type: 'preloaded' }
   | { id: number; type: 'error'; message: string };
 

@@ -1,6 +1,8 @@
+import { QueryClientProvider } from '@tanstack/react-query';
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
+import { WagmiProvider } from 'wagmi';
 
 /* 字体三角色,按需 weight(Design §7.2):
    Chakra Petch 600/700 大标题 | Inter 400/500 正文 | IBM Plex Mono 400/600 数据
@@ -14,11 +16,18 @@ import '@fontsource/ibm-plex-mono/600.css';
 import './styles/index.css';
 
 import App from './App.tsx';
+import { queryClient, wagmiConfig } from './lib/wagmi.ts';
 
+// WagmiProvider(链/连接器/transport)→ QueryClientProvider(wagmi v2 peer,缓存读链调用)
+// → Router → App。顺序:wagmi 在外,query 次之,二者必须包住所有用 wagmi/query hook 的组件。
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
+    <WagmiProvider config={wagmiConfig}>
+      <QueryClientProvider client={queryClient}>
+        <BrowserRouter>
+          <App />
+        </BrowserRouter>
+      </QueryClientProvider>
+    </WagmiProvider>
   </StrictMode>,
 );
