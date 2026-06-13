@@ -2,8 +2,14 @@
  * useProver —— main 线程侧的证明管线门面(Design §7.5 本地计算阶段的唯一持有者)。
  *
  * 设计:模块级**懒单例 Worker**,跨账户 / 对局 / 组件共享一个实例(证明产物缓存在 worker 内,
- * 多账户切换不必重拉 12MB+ 工件)。每条请求分配单调自增 id,id → {resolve,reject} 路由消息;
- * progress 按 id 落到模块级快照表,经 useSyncExternalStore 让任意组件订阅最新进度。
+ * 多账户切换不必重拉 12MB+ 工件)。每条请求分配单调自增 id,id → {resolve,reject,circuit,timer}
+ * 路由消息;progress 按**电路**(非 id)落到模块级快照表,经 useSyncExternalStore 让任意组件
+ * 订阅某电路的最新进度。
+ *
+ * 为什么按电路分桶(不是「所有在途取 max id」):域内可同时存在 board 证明(3.5 布阵)与 shot
+ * 证明(3.7 useAutoRespond 应答)各一条;若塌缩成单条「最新」,后发起的 shot 会盖掉 board 的
+ * 进度,且消费方拿不到「在算哪个电路」无法渲染「正在编译 board 证明 · fetch-zkey 61%」。
+ * 故 progress 存 Map<Circuit, {id, snap}>,ProofStatus 用 useProverProgress(circuit) 取本电路那条。
  *
  * 纪律(3.1 浏览器安全):本文件**不 import snarkjs、不碰任何 node API**——snarkjs 只在 worker 内。
  * 这里只 `new Worker(new URL('../workers/prover.worker.ts', import.meta.url), {type:'module'})`,
@@ -25,26 +31,84 @@ import type {
 
 export type ProveResult = { proof: Groth16Proof; publicSignals: string[] };
 
+/**
+ * 单请求超时(ms)。证明实测亚秒级(board 本地计算 ~700ms),60s 是给「module worker 加载
+ * 失败但不触发 onerror」「结构化克隆收发异常未冒泡」等未知卡死的保险:超时即 reject 一个可读
+ * Error,让 ProofStatus 渲染真实错误而非无限转圈。
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
 // ── 模块级单例状态(整个应用共享一份) ──────────────────────────────────────
 
 let worker: Worker | null = null;
 let nextId = 1;
 
-/** id → 该请求的 promise 句柄。preload 的 resolve 不带值(void),prove 带 ProveResult。 */
+/**
+ * id → 该请求的 promise 句柄。preload 的 resolve 不带值(void),prove 带 ProveResult。
+ * 额外带 circuit(终态清理时据此定位 progress 桶)与 timer(settle 时清掉,防误触发超时)。
+ */
 type Pending =
-  | { kind: 'preload'; resolve: () => void; reject: (e: Error) => void }
-  | { kind: 'prove'; resolve: (r: ProveResult) => void; reject: (e: Error) => void };
+  | {
+      kind: 'preload';
+      circuit: Circuit;
+      timer: ReturnType<typeof setTimeout>;
+      resolve: () => void;
+      reject: (e: Error) => void;
+    }
+  | {
+      kind: 'prove';
+      circuit: Circuit;
+      timer: ReturnType<typeof setTimeout>;
+      resolve: (r: ProveResult) => void;
+      reject: (e: Error) => void;
+    };
 
 const pending = new Map<number, Pending>();
 
-/** id → 最新进度快照;done/error/拒绝后清除。供 ProofStatus 订阅。 */
-const progressById = new Map<number, ProgressSnapshot>();
+/**
+ * circuit → 该电路最新进度({id, snap})。按电路分桶,board / shot 互不覆盖。
+ * 存 id 是为了「归属判定」:只有**当前占用该电路桶的那个 id** 的终态(done/error/超时)才清桶,
+ * 避免一个已结束的旧请求误清掉同电路上一个更新请求的进度;同样,旧请求的迟到 progress 帧
+ * 也不得覆盖更新请求(只接受 id ≥ 当前桶 id 的帧)。
+ */
+const progressByCircuit = new Map<Circuit, { id: number; snap: ProgressSnapshot }>();
 
 /** useSyncExternalStore 订阅者集合;任何 progress 变动后逐一通知触发重渲染。 */
 const listeners = new Set<() => void>();
 
 function emitChange(): void {
   for (const l of listeners) l();
+}
+
+/**
+ * 终态收口:清掉该 id 的超时定时器与 pending 项,并在该 id 仍占用其电路桶时清掉进度桶。
+ * 返回被摘下的 pending 项(调用方据 kind resolve/reject);id 不存在(已被别的路径收口)返回 undefined。
+ * 不在此 emitChange——由调用方在 resolve/reject 后统一发,避免重复通知。
+ */
+function settle(id: number): Pending | undefined {
+  const entry = pending.get(id);
+  if (!entry) return undefined;
+  clearTimeout(entry.timer);
+  pending.delete(id);
+  const bucket = progressByCircuit.get(entry.circuit);
+  if (bucket && bucket.id === id) {
+    progressByCircuit.delete(entry.circuit);
+  }
+  return entry;
+}
+
+/**
+ * 拒掉全部在途请求(用于脚本级 onerror / onmessageerror 这类 id 不可知的致命错误)。
+ * 清空进度桶与 pending,逐一 reject,最后 emitChange 一次。
+ */
+function rejectAll(err: Error): void {
+  for (const [, entry] of pending) {
+    clearTimeout(entry.timer);
+    entry.reject(err);
+  }
+  pending.clear();
+  progressByCircuit.clear();
+  emitChange();
 }
 
 /**
@@ -60,46 +124,55 @@ function getWorker(): Worker {
 
   w.onmessage = (e: MessageEvent<ProveRes>) => {
     const msg = e.data;
-    const entry = pending.get(msg.id);
     switch (msg.type) {
-      case 'progress':
-        progressById.set(msg.id, { stage: msg.stage, loaded: msg.loaded, total: msg.total });
+      case 'progress': {
+        // 归属判定:同电路上只接受 id ≥ 当前桶 id 的帧(更新或同一请求),拒绝旧请求迟到帧。
+        const bucket = progressByCircuit.get(msg.circuit);
+        if (bucket && msg.id < bucket.id) return;
+        progressByCircuit.set(msg.circuit, {
+          id: msg.id,
+          snap: {
+            circuit: msg.circuit,
+            stage: msg.stage,
+            loaded: msg.loaded,
+            total: msg.total,
+          },
+        });
         emitChange();
         return;
-      case 'preloaded':
-        progressById.delete(msg.id);
-        if (entry && entry.kind === 'preload') {
-          pending.delete(msg.id);
-          entry.resolve();
-        }
+      }
+      case 'preloaded': {
+        const entry = settle(msg.id);
+        if (entry && entry.kind === 'preload') entry.resolve();
         emitChange();
         return;
-      case 'done':
-        progressById.delete(msg.id);
+      }
+      case 'done': {
+        const entry = settle(msg.id);
         if (entry && entry.kind === 'prove') {
-          pending.delete(msg.id);
           entry.resolve({ proof: msg.proof, publicSignals: msg.publicSignals });
         }
         emitChange();
         return;
-      case 'error':
-        progressById.delete(msg.id);
-        if (entry) {
-          pending.delete(msg.id);
-          entry.reject(new Error(msg.message));
-        }
+      }
+      case 'error': {
+        const entry = settle(msg.id);
+        if (entry) entry.reject(new Error(msg.message));
         emitChange();
         return;
+      }
     }
   };
 
-  // 脚本级致命错误(worker 加载失败 / 未捕获异常):拒掉全部在途,清空进度
+  // 脚本级致命错误(worker 加载失败 / 未捕获异常):拒掉全部在途,清空进度。
   w.onerror = (ev: ErrorEvent) => {
-    const err = new Error(`prover worker 致命错误:${ev.message || '未知'}`);
-    for (const [, entry] of pending) entry.reject(err);
-    pending.clear();
-    progressById.clear();
-    emitChange();
+    rejectAll(new Error(`prover worker 致命错误:${ev.message || '未知'}`));
+  };
+
+  // 结构化克隆接收失败(收到无法反序列化的消息):此时 e.data 不可信、id 不可知,
+  // 故拒掉全部在途并给可读 message,避免相关 promise 永挂。
+  w.onmessageerror = () => {
+    rejectAll(new Error('prover worker 消息反序列化失败(structured clone),已中止在途请求'));
   };
 
   worker = w;
@@ -115,11 +188,13 @@ function postReq(req: ProveReq): void {
 /**
  * 预热某电路:拉取并缓存 wasm+zkey,后续 prove 免网络。可在进入布阵幕时调用以隐藏延迟。
  * 已在缓存时 worker 立即回 preloaded(仍走一遍消息,开销可忽略)。
+ * 超时(REQUEST_TIMEOUT_MS)未回 → reject 并清理本请求的 pending / 进度桶。
  */
 export function preload(circuit: Circuit): Promise<void> {
   const id = nextId++;
   return new Promise<void>((resolve, reject) => {
-    pending.set(id, { kind: 'preload', resolve, reject });
+    const timer = setTimeout(() => onTimeout(id), REQUEST_TIMEOUT_MS);
+    pending.set(id, { kind: 'preload', circuit, timer, resolve, reject });
     postReq({ id, type: 'preload', circuit });
   });
 }
@@ -127,17 +202,30 @@ export function preload(circuit: Circuit): Promise<void> {
 /**
  * 生成证明。inputs 必须是 toBoardInputs / toShotInputs 的产物(bigint 已转十进制字符串)。
  * 返回 {proof, publicSignals};proof 可直接喂给 formatProofCalldata(经 web/lib 的 contracts re-export)。
- * 失败(worker error 消息或脚本级错误)reject Error。
+ * 失败(worker error 消息 / 脚本级错误 / 超时)reject Error。
  */
 export function prove(circuit: Circuit, inputs: ProveInputs): Promise<ProveResult> {
   const id = nextId++;
   return new Promise<ProveResult>((resolve, reject) => {
-    pending.set(id, { kind: 'prove', resolve, reject });
+    const timer = setTimeout(() => onTimeout(id), REQUEST_TIMEOUT_MS);
+    pending.set(id, { kind: 'prove', circuit, timer, resolve, reject });
     postReq({ id, type: 'prove', circuit, inputs });
   });
 }
 
-// ── React 订阅:最新进度(供 ProofStatus) ──────────────────────────────────
+/**
+ * 单请求超时收口:摘下该 id(settle 同时清其电路进度桶),reject 可读 Error,emitChange。
+ * id 已被其它路径收口(竞态:done/error 与超时同帧)时 settle 返回 undefined,安全 no-op。
+ */
+function onTimeout(id: number): void {
+  const entry = settle(id);
+  if (entry) {
+    entry.reject(new Error(`prover 超时(${REQUEST_TIMEOUT_MS / 1000}s)未响应,可能 worker 加载失败`));
+    emitChange();
+  }
+}
+
+// ── React 订阅:某电路的最新进度(供 ProofStatus) ──────────────────────────
 
 function subscribe(cb: () => void): () => void {
   listeners.add(cb);
@@ -147,62 +235,84 @@ function subscribe(cb: () => void): () => void {
 }
 
 /**
- * 最近一条在途进度快照(across all in-flight ids 取最新写入的那条)。
- * §7.5 ProofStatus 只需展示「当前在算什么」;多请求并发极少(对战是回合制串行),取最新足够。
- * 无在途时返回 null。引用稳定:同一快照对象多次读返回同引用,避免 useSyncExternalStore 抖动。
+ * 每电路一个**稳定的** getSnapshot 闭包(useSyncExternalStore 要求 getSnapshot 引用稳定,
+ * 否则每次渲染都重订阅)。同时做引用稳定化:内容不变时复用上次返回的 snap 对象,避免
+ * useSyncExternalStore 用 Object.is 比较时误判变动导致死循环 / 抖动。
  */
-let lastSnapshotRef: { id: number; snap: ProgressSnapshot } | null = null;
-function getLatestProgressSnapshot(): { id: number; snap: ProgressSnapshot } | null {
-  if (progressById.size === 0) {
-    lastSnapshotRef = null;
-    return null;
-  }
-  // Map 迭代保留插入序;最后插入(或最近更新会 re-set 到末尾?Map.set 已存在 key 不改序)。
-  // 为稳妥取「最大 id」=最近发起的请求,语义上即当前最该展示的那条。
-  let pickId = -1;
-  let pickSnap: ProgressSnapshot | null = null;
-  for (const [id, snap] of progressById) {
-    if (id > pickId) {
-      pickId = id;
-      pickSnap = snap;
+const snapshotGetters = new Map<Circuit, () => ProgressSnapshot | null>();
+const lastSnapByCircuit = new Map<Circuit, ProgressSnapshot>();
+
+function getSnapshotGetter(circuit: Circuit): () => ProgressSnapshot | null {
+  let getter = snapshotGetters.get(circuit);
+  if (getter) return getter;
+  getter = () => {
+    const bucket = progressByCircuit.get(circuit);
+    if (!bucket) {
+      lastSnapByCircuit.delete(circuit);
+      return null;
     }
-  }
-  if (pickSnap === null) {
-    lastSnapshotRef = null;
-    return null;
-  }
-  // 引用稳定化:内容相同则复用旧引用(useSyncExternalStore 用 Object.is 比较)
-  if (
-    lastSnapshotRef &&
-    lastSnapshotRef.id === pickId &&
-    lastSnapshotRef.snap.stage === pickSnap.stage &&
-    lastSnapshotRef.snap.loaded === pickSnap.loaded &&
-    lastSnapshotRef.snap.total === pickSnap.total
-  ) {
-    return lastSnapshotRef;
-  }
-  lastSnapshotRef = { id: pickId, snap: pickSnap };
-  return lastSnapshotRef;
+    const prev = lastSnapByCircuit.get(circuit);
+    const next = bucket.snap;
+    if (
+      prev &&
+      prev.circuit === next.circuit &&
+      prev.stage === next.stage &&
+      prev.loaded === next.loaded &&
+      prev.total === next.total
+    ) {
+      return prev;
+    }
+    lastSnapByCircuit.set(circuit, next);
+    return next;
+  };
+  snapshotGetters.set(circuit, getter);
+  return getter;
 }
 
 /**
- * Hook:订阅最新本地计算进度。返回 {stage, loaded?, total?} 或 null(无在途)。
- * 给 §7.5 ProofStatus 用:它再叠加链上等待阶段,合成完整证明状态条。
+ * Hook:订阅**指定电路**的最新本地计算进度。返回 {circuit, stage, loaded?, total?} 或 null
+ * (该电路当前无在途计算)。给 §7.5 ProofStatus 用:它再叠加链上等待阶段,合成完整证明状态条。
  */
-export function useProverProgress(): ProgressSnapshot | null {
-  const ref = useSyncExternalStore(subscribe, getLatestProgressSnapshot, () => null);
-  return ref ? ref.snap : null;
+export function useProverProgress(circuit: Circuit): ProgressSnapshot | null {
+  return useSyncExternalStore(
+    subscribe,
+    getSnapshotGetter(circuit),
+    () => null,
+  );
+}
+
+/**
+ * 非 hook 同步读取某电路当前进度快照(无在途返回 null)。等价于 useProverProgress 的读路径,
+ * 但不订阅 React——供单测断言 store 分桶/归属逻辑,以及非组件上下文按需取值。
+ */
+export function peekProgress(circuit: Circuit): ProgressSnapshot | null {
+  return getSnapshotGetter(circuit)();
 }
 
 /**
  * useProver:把命令式 API 收成一个 hook 返回值,方便组件解构。
- * prove/preload 引用稳定(模块级函数),progress 经 useSyncExternalStore 实时更新。
+ * prove/preload 引用稳定(模块级函数),progress 经 useSyncExternalStore 实时更新(指定电路)。
  */
-export function useProver(): {
+export function useProver(circuit: Circuit): {
   prove: typeof prove;
   preload: typeof preload;
   progress: ProgressSnapshot | null;
 } {
-  const progress = useProverProgress();
+  const progress = useProverProgress(circuit);
   return { prove, preload, progress };
+}
+
+// ── Vite HMR:dispose 旧 worker,避免热更新残留重复 worker 实例 ───────────────
+// dev 下编辑本模块会重执行,但旧 worker 不会自动回收;dispose 钩子里 terminate 并清状态,
+// 让下次 getWorker() 干净重建。生产构建无 import.meta.hot,该分支被剔除。
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    worker?.terminate();
+    worker = null;
+    pending.clear();
+    progressByCircuit.clear();
+    listeners.clear();
+    snapshotGetters.clear();
+    lastSnapByCircuit.clear();
+  });
 }

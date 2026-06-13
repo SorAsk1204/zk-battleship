@@ -53,6 +53,7 @@ function post(msg: ProveRes): void {
  */
 async function fetchWithProgress(
   url: string,
+  circuit: Circuit,
   id: number,
   stage: Extract<ProveStage, 'fetch-wasm' | 'fetch-zkey'>,
 ): Promise<Uint8Array> {
@@ -65,7 +66,14 @@ async function fetchWithProgress(
   if (!res.body) {
     // 极少数环境无可读流:退化为整体读取,仍发一次终态进度(loaded=total)。
     const buf = new Uint8Array(await res.arrayBuffer());
-    post({ id, type: 'progress', stage, loaded: buf.byteLength, total: total ?? buf.byteLength });
+    post({
+      id,
+      type: 'progress',
+      circuit,
+      stage,
+      loaded: buf.byteLength,
+      total: total ?? buf.byteLength,
+    });
     return buf;
   }
 
@@ -73,14 +81,14 @@ async function fetchWithProgress(
   const chunks: Uint8Array[] = [];
   let loaded = 0;
   // 起始发一帧(loaded=0),让 UI 立刻进入该阶段
-  post({ id, type: 'progress', stage, loaded: 0, total });
+  post({ id, type: 'progress', circuit, stage, loaded: 0, total });
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     if (value) {
       chunks.push(value);
       loaded += value.byteLength;
-      post({ id, type: 'progress', stage, loaded, total });
+      post({ id, type: 'progress', circuit, stage, loaded, total });
     }
   }
 
@@ -101,7 +109,7 @@ async function fetchWithProgress(
 async function ensureWasm(circuit: Circuit, id: number): Promise<Uint8Array> {
   const slot = cache.get(circuit) ?? {};
   if (!slot.wasm) {
-    slot.wasm = await fetchWithProgress(artifactUrl(circuit, 'wasm'), id, 'fetch-wasm');
+    slot.wasm = await fetchWithProgress(artifactUrl(circuit, 'wasm'), circuit, id, 'fetch-wasm');
     cache.set(circuit, slot);
   }
   return slot.wasm;
@@ -111,7 +119,7 @@ async function ensureWasm(circuit: Circuit, id: number): Promise<Uint8Array> {
 async function ensureZkey(circuit: Circuit, id: number): Promise<Uint8Array> {
   const slot = cache.get(circuit) ?? {};
   if (!slot.zkey) {
-    slot.zkey = await fetchWithProgress(artifactUrl(circuit, 'zkey'), id, 'fetch-zkey');
+    slot.zkey = await fetchWithProgress(artifactUrl(circuit, 'zkey'), circuit, id, 'fetch-zkey');
     cache.set(circuit, slot);
   }
   return slot.zkey;
@@ -135,12 +143,12 @@ async function runProve(
   const zkey = await ensureZkey(circuit, id);
 
   // witness 阶段:circom witness 计算(CPU-bound,但远轻于 prove)
-  post({ id, type: 'progress', stage: 'witness' });
+  post({ id, type: 'progress', circuit, stage: 'witness' });
   const wtns: { type: 'mem'; data?: Uint8Array } = { type: 'mem' };
   await snarkjs.wtns.calculate(inputs, { type: 'mem', data: wasm }, wtns);
 
   // prove 阶段:Groth16 证明生成(重活,ffjavascript 多 worker 并行 FFT/MSM)
-  post({ id, type: 'progress', stage: 'prove' });
+  post({ id, type: 'progress', circuit, stage: 'prove' });
   const { proof, publicSignals } = await snarkjs.groth16.prove({ type: 'mem', data: zkey }, wtns);
 
   return { proof: proof as Groth16Proof, publicSignals };

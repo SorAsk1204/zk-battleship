@@ -42,15 +42,35 @@ export type ProveStage = 'fetch-wasm' | 'fetch-zkey' | 'witness' | 'prove';
 
 /**
  * worker → main 响应。
- * - progress:loaded/total 仅 fetch-* 阶段有(来自 Content-Length);witness/prove 不带字节数。
- * - done:仅 prove 请求产出;preload 完成也回 done(无 proof/publicSignals,见下方 PreloadDone)。
+ * - progress:带 circuit(每个 post 点 worker 都已知电路),让上层能按电路分桶并渲染
+ *   「正在编译 board 证明 · fetch-zkey 61%」。loaded/total 仅 fetch-* 阶段有(来自 Content-Length);
+ *   witness/prove 不带字节数。
+ * - done:仅 prove 请求产出(带 proof/publicSignals)。
+ * - preloaded:preload 请求完成(只拉满 wasm+zkey 入缓存,无 proof);与 done 分开,让 id 路由
+ *   能干净区分「预热完成」与「出证完成」。
  * - error:任何抛错统一收口于此,带可读 message。
  */
 export type ProveRes =
-  | { id: number; type: 'progress'; stage: ProveStage; loaded?: number; total?: number }
+  | {
+      id: number;
+      type: 'progress';
+      circuit: Circuit;
+      stage: ProveStage;
+      loaded?: number;
+      total?: number;
+    }
   | { id: number; type: 'done'; proof: Groth16Proof; publicSignals: string[] }
   | { id: number; type: 'preloaded' }
   | { id: number; type: 'error'; message: string };
 
-/** 进度快照(useProver 对外暴露给未来 ProofStatus 组件;只含本地计算阶段,不含链上等待)。 */
-export type ProgressSnapshot = { stage: ProveStage; loaded?: number; total?: number };
+/**
+ * 进度快照(useProver 对外暴露给未来 ProofStatus 组件;只含本地计算阶段,不含链上等待)。
+ * 带 circuit:进度按电路分桶(域内最多 board + shot 各一条并发),ProofStatus 可据此区分
+ * 「在算哪个电路」,且 board 证明(3.5)与 shot 证明(3.7)并发时互不覆盖。
+ */
+export type ProgressSnapshot = {
+  circuit: Circuit;
+  stage: ProveStage;
+  loaded?: number;
+  total?: number;
+};
