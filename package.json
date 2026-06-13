@@ -7,7 +7,7 @@
     "node": ">=22"
   },
   "scripts": {
-    "test:all": "pnpm --filter @zk-battleship/circuits --fail-if-no-match run test && pnpm --filter @zk-battleship/contracts --fail-if-no-match run test && pnpm --filter @zk-battleship/e2e --fail-if-no-match run test",
+    "test:all": "pnpm --filter @zk-battleship/circuits --fail-if-no-match run test && pnpm --filter @zk-battleship/contracts --fail-if-no-match run test && pnpm --filter @zk-battleship/e2e --fail-if-no-match run test && pnpm --filter @zk-battleship/web --fail-if-no-match run test",
     "demo": "tsx scripts/demo.ts"
   },
   "devDependencies": {

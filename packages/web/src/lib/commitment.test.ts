@@ -13,6 +13,7 @@ import {
   encodeShipsForHash,
   toBoardInputs,
   toShotInputs,
+  verifyBoardCommitment,
 } from './commitment.ts';
 
 // 与 circuits/test/lib.test.ts 的 boardB 完全一致
@@ -63,5 +64,33 @@ describe('commitment re-export 链路与真理源互验', () => {
     expect(got.commitment).toBe(KNOWN_COMMITMENT_BOARDB_DEADBEEF.toString(10));
     expect(got.tx).toBe('3');
     expect(got.ty).toBe('7');
+  });
+});
+
+describe('verifyBoardCommitment(I1/M5:本地棋盘 vs 链上承诺)', () => {
+  const SALT_HEX = '0xdeadbeef';
+  const COMMIT_DEC = KNOWN_COMMITMENT_BOARDB_DEADBEEF.toString(10);
+  const COMMIT_HEX = `0x${KNOWN_COMMITMENT_BOARDB_DEADBEEF.toString(16)}`;
+
+  it('ships/salt/commitment 自洽 → true(十进制承诺串)', () => {
+    expect(verifyBoardCommitment(boardB, SALT_HEX, COMMIT_DEC)).toBe(true);
+  });
+
+  it('承诺以 0x hex 串给出也认(按 bigint 比较,不挑进制)', () => {
+    expect(verifyBoardCommitment(boardB, SALT_HEX, COMMIT_HEX)).toBe(true);
+    expect(verifyBoardCommitment(boardB, '3735928559', COMMIT_DEC)).toBe(true); // salt 十进制同值
+  });
+
+  it('salt 不对 → false', () => {
+    expect(verifyBoardCommitment(boardB, '0xdeadbef0', COMMIT_DEC)).toBe(false);
+  });
+
+  it('commitment 不对(0x0)→ false', () => {
+    expect(verifyBoardCommitment(boardB, SALT_HEX, '0x0')).toBe(false);
+  });
+
+  it('ships 改一格 → false(承诺对船敏感)', () => {
+    const moved = boardB.map((s, i) => (i === 0 ? { ...s, y: 1 } : s));
+    expect(verifyBoardCommitment(moved, SALT_HEX, COMMIT_DEC)).toBe(false);
   });
 });

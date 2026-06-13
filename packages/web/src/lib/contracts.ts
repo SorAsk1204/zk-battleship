@@ -75,10 +75,16 @@ function parseDeployment(data: unknown): Deployment {
 }
 
 /**
- * 加载部署信息。文件不存在(404)或内容损坏 → 抛 DeploymentNotFoundError(人话文案),
- * 由 UI 顶层捕获展示;网络/解析以外的意外错误原样上抛。
+ * 模块级 promise 缓存(I3)。deployment.json 一个会话内不变(pnpm demo 写一次),故缓存 **promise**
+ * 而非结果:首调发起 fetch,缓存其 promise;并发的后续调用拿到同一 promise(去重,只打一次网络),
+ * 后续调用直接复用。reloadDeployment 是逃生口(清缓存重取),供需要强刷的场景(几乎用不到)。
+ *
+ * 失败的 promise 也会被缓存:首调失败(如 demo 没起)后,后续调用会复用同一个 rejected promise。
+ * 这是有意的——重试应走 reloadDeployment 显式清缓存,而非靠重复调用偷偷重试(语义更清晰)。
  */
-export async function loadDeployment(): Promise<Deployment> {
+let cache: Promise<Deployment> | undefined;
+
+async function fetchDeployment(): Promise<Deployment> {
   let res: Response;
   try {
     res = await fetch(DEPLOYMENT_URL, { cache: 'no-store' });
@@ -97,4 +103,20 @@ export async function loadDeployment(): Promise<Deployment> {
     throw new DeploymentNotFoundError('部署信息不是合法 JSON。请重新运行 pnpm demo。');
   }
   return parseDeployment(json);
+}
+
+/**
+ * 加载部署信息(memoized,I3)。文件不存在(404)或内容损坏 → 抛 DeploymentNotFoundError(人话文案),
+ * 由 UI 顶层捕获展示;网络/解析以外的意外错误原样上抛。
+ * 并发多次调用只触发一次 fetch(共享同一 promise);需强制重取见 reloadDeployment。
+ */
+export function loadDeployment(): Promise<Deployment> {
+  if (cache === undefined) cache = fetchDeployment();
+  return cache;
+}
+
+/** 逃生口:清缓存并重新拉取(返回新 promise)。一般无需调用——deployment.json 一会话内不变。 */
+export function reloadDeployment(): Promise<Deployment> {
+  cache = fetchDeployment();
+  return cache;
 }

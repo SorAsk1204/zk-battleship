@@ -51,6 +51,8 @@ export function shortAddr(addr: string, head = 6, tail = 4): string {
  * 用本地时区,等宽字体下对齐。
  */
 export function formatLogTime(ts: number): string {
+  // <1e12 判秒/毫秒的启发式假设是"当代时间戳":链上秒 ~1.7e9、Date.now 毫秒 ~1.7e12,
+  // 分界 1e12 落在两者之间(1e12 秒 ≈ 公元 33658 年,远超合理范围)。本系统不会遇到该年代时间戳,故安全。
   const ms = ts < 1e12 ? ts * 1000 : ts;
   const d = new Date(ms);
   const pad = (n: number) => String(n).padStart(2, '0');

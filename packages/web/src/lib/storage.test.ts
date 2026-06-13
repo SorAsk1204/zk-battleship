@@ -15,8 +15,10 @@ import {
   toStored,
   fromStored,
   isStoredBoard,
+  StorageWriteError,
   type BoardRecord,
 } from './storage.ts';
+import { computeCommitment } from './commitment.ts';
 
 const CHAIN = 31337;
 const CONTRACT = '0x9fe46736679d2d9a65f0992f2272de9f3c7fa6e0';
@@ -31,10 +33,12 @@ const SHIPS: Ship[] = [
   { x: 8, y: 8, dir: 1 },
 ];
 
-// 含高位的大 bigint,验证 hex 无损(超 JS safe integer)。
+// SHIPS == circuits boardB;salt=0xdeadbeef 对应的真实 Poseidon 承诺(与 commitment.test 同一向量)。
+// salt/commitment 必须自洽:importBoardJSON 现在会 verifyBoardCommitment,salt 与 commitment 对不上即 reject。
+// commitment 本身是 77 位十进制数(远超 JS safe integer),已足以验证 hex 序列化无损。
 const REC: BoardRecord = {
   ships: SHIPS,
-  salt: 0xdeadbeef_deadbeef_deadbeef_deadbeefn,
+  salt: 0xdeadbeefn,
   commitment: 10562143633053394694015122280104595996515830983000757199484363156303195434041n,
 };
 
@@ -112,6 +116,65 @@ describe('正式键 save/load/remove round-trip', () => {
   });
 });
 
+describe('C1:写盘失败 → StorageWriteError(非静默吞)', () => {
+  // localStorage 存在但 setItem 抛(配额耗尽 / Safari 隐私模式)。注入一个会抛的 setItem。
+  function withThrowingSetItem(run: () => void): void {
+    const orig = localStorage.setItem;
+    const ex = new DOMException('mock quota', 'QuotaExceededError');
+    localStorage.setItem = () => {
+      throw ex;
+    };
+    try {
+      run();
+    } finally {
+      localStorage.setItem = orig;
+    }
+  }
+
+  it('saveBoard 在 setItem 抛时抛 StorageWriteError,消息点名丢失应答能力', () => {
+    withThrowingSetItem(() => {
+      let caught: unknown;
+      try {
+        saveBoard(CHAIN, CONTRACT, 7, ADDR, REC);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(StorageWriteError);
+      expect((caught as Error).message).toContain('丢失应答能力');
+    });
+  });
+
+  it('savePending 在 setItem 抛时同样抛 StorageWriteError', () => {
+    withThrowingSetItem(() => {
+      expect(() => savePending(CHAIN, CONTRACT, ADDR, REC)).toThrow(StorageWriteError);
+    });
+  });
+
+  it('StorageWriteError 保留原始 cause(便于上层判型 QuotaExceededError)', () => {
+    withThrowingSetItem(() => {
+      try {
+        saveBoard(CHAIN, CONTRACT, 7, ADDR, REC);
+        expect.unreachable('应已抛出');
+      } catch (e) {
+        expect(e).toBeInstanceOf(StorageWriteError);
+        expect((e as { cause?: unknown }).cause).toBeInstanceOf(DOMException);
+        expect(((e as { cause?: DOMException }).cause as DOMException).name).toBe(
+          'QuotaExceededError',
+        );
+      }
+    });
+  });
+
+  it('promotePending 在写正式键失败时上抛 StorageWriteError,pending 仍在(未误删)', () => {
+    savePending(CHAIN, CONTRACT, ADDR, REC);
+    withThrowingSetItem(() => {
+      expect(() => promotePending(CHAIN, CONTRACT, ADDR, 42)).toThrow(StorageWriteError);
+    });
+    // saveBoard 抛在 removeItem 之前,pending 应原封不动 → 可重试/导出,数据没丢。
+    expect(loadPending(CHAIN, CONTRACT, ADDR)).toEqual(REC);
+  });
+});
+
 describe('pending → promote 迁移', () => {
   it('savePending → loadPending 还原', () => {
     savePending(CHAIN, CONTRACT, ADDR, REC);
@@ -165,6 +228,59 @@ describe('导出 / 导入', () => {
     expect(() => importBoardJSON({ ...toStored(REC), salt: 'nothex' })).toThrow();
     expect(() => importBoardJSON({ ...toStored(REC), ships: [] })).toThrow(); // 船数不对
     expect(() => importBoardJSON({ ...toStored(REC), version: 99 })).toThrow();
+  });
+});
+
+describe('I1:importBoardJSON 入口拦截非法布局 / 承诺不一致(此前会被接受)', () => {
+  const VALID_STORED = toStored(REC); // 自洽:SHIPS=boardB,salt 0xdeadbeef,commitment 真值
+
+  it('越界坐标(x:50)→ reject,报"布局非法"且点名 code', () => {
+    // 形状校验只查 Number.isInteger,x:50 能过形状,到 validateBoard 才被 BAD_COORD 拦。
+    const oob = {
+      ...VALID_STORED,
+      ships: [{ x: 50, y: 0, dir: 1 }, ...VALID_STORED.ships.slice(1)],
+    };
+    expect(isStoredBoard(oob)).toBe(true); // 确认确实越过形状关
+    expect(() => importBoardJSON(oob)).toThrow(/布局非法/);
+    expect(() => importBoardJSON(oob)).toThrow(/BAD_COORD/);
+  });
+
+  it('重叠船 → reject,报"布局非法(OVERLAP)"', () => {
+    // 两条 dir=0 的船头都落在 (0,0),占格相交 → OVERLAP;坐标/dir 均合法,能过形状关。
+    const overlap = {
+      ...VALID_STORED,
+      ships: [
+        { x: 0, y: 0, dir: 0 },
+        { x: 0, y: 0, dir: 0 },
+        { x: 0, y: 5, dir: 0 },
+        { x: 0, y: 7, dir: 0 },
+        { x: 0, y: 9, dir: 0 },
+      ],
+    };
+    expect(isStoredBoard(overlap)).toBe(true);
+    expect(() => importBoardJSON(overlap)).toThrow(/布局非法/);
+    expect(() => importBoardJSON(overlap)).toThrow(/OVERLAP/);
+  });
+
+  it("承诺不一致(commitment:'0x0')→ reject,报\"棋盘与其承诺不一致\"", () => {
+    const badCommit = { ...VALID_STORED, commitment: '0x0' };
+    expect(isStoredBoard(badCommit)).toBe(true); // '0x0' 过 hex 形状关
+    expect(() => importBoardJSON(badCommit)).toThrow(/棋盘与其承诺不一致/);
+  });
+
+  it('布局合法但 salt 改了(承诺对不上)→ reject 承诺不一致(不是布局非法)', () => {
+    // salt 换成别的合法 hex,布局照旧合法,但重算承诺 != 存的 commitment。
+    const wrongSalt = { ...VALID_STORED, salt: '0xdeadbef0' };
+    expect(() => importBoardJSON(wrongSalt)).toThrow(/棋盘与其承诺不一致/);
+    expect(() => importBoardJSON(wrongSalt)).not.toThrow(/布局非法/);
+  });
+
+  it('自洽文件仍正常导入(回归:别误伤合法文件)', () => {
+    const back = importBoardJSON(VALID_STORED as unknown);
+    expect(back.salt).toBe(REC.salt);
+    expect(back.commitment).toBe(REC.commitment);
+    // 自检:存的 commitment 确实是 ships+salt 的真实 Poseidon 输出
+    expect(computeCommitment(SHIPS as never, REC.salt)).toBe(REC.commitment);
   });
 });
 
