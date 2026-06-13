@@ -30,4 +30,36 @@
     background: var(--color-phosphor);
     color: var(--color-abyss);
   }
+
+  /* 可见键盘焦点基线(Design §7.7:全部可交互元素有可见键盘焦点)。
+     给所有可聚焦元素一个统一的磷光焦点环——一处规则覆盖大厅/对战/结算所有按钮、链接、输入,
+     无需逐个按钮加 focus 样式。:focus-visible 仅在键盘/程序化聚焦时出现(鼠标点击不显),不打扰指针用户。
+     BoardGrid 的格子另有更具体的 focus 内嵌环(utilities 层,晚于本 base 规则)→ 格子保留自己的
+     -2px inset 环,其它元素吃这条基线;二者同为 --phosphor,视觉一致。 */
+  :focus-visible {
+    outline: 2px solid var(--color-phosphor);
+    outline-offset: 2px;
+  }
+
+  /* ── reduced-motion 基线(Design §7.4:prefers-reduced-motion 时扫描线停转、抖动取消、
+        **保留颜色反馈**)──
+     M3 只建基线:即时完成现存的 CSS **过渡**(transition,如 FleetDock 的 transition-colors)——
+     过渡瞬时完成,不丢任何状态/颜色。**颜色反馈(命中 --flare / 未命中 --phosphor·--foam)是着色、
+     不是动效**,本规则不碰,天然保留。
+     刻意**不**blanket 关掉 animation:当前唯一的 animation 是「在进行」spinner(animate-spin),
+     它传达功能性进度反馈、且文案已同步表意,保留(§9.4「保留颜色反馈 + 不依赖动效」仍满足:即便
+     无 spinner 也有文案)。
+     M4 的声呐扫描 / 命中涟漪 / 脉冲 / 抖动 / 结算扫屏是**新增**动效,因其为 animation(非 transition)
+     不会被本基线自动停掉——这是**有意**的:CSS 无从判断哪条 animation 是「装饰」哪条是「功能」。
+     故 M4 这些装饰性动效必须在 JS 侧 `useReducedMotion()` 为真时退化为静态(只留颜色反馈),
+     由 useReducedMotion.ts 提供判定口径。本基线 + 那个 hook = §7.4 的完整脚手架。 */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      transition-duration: 0.01ms !important;
+      transition-delay: 0ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }

@@ -367,3 +367,37 @@ wagmi config 必须静态,合约地址才运行时 fetch;chain 用 viem 内置 a
 - 全程 fresh-load **0 console error**(仅 RR v7 warning)。demo 干净停(树杀 vite+anvil,8545/5173 释放,「清理完成」)。
 
 **文件**:新增 `src/pages/{battleReport.ts, battleReport.test.ts}`、`src/components/{Toast.tsx, PersistenceBanner.tsx, persistenceBanner.test.ts}`;改 `src/hooks/useAutoRespond.ts(+clearInFlight + useSyncExternalStore 释放信号)`、`src/pages/Game.tsx(FinishAct 原位换全结算幕 + Stat 小件;BattleAct/P0Waiting 挂 PersistenceBanner + boardReload 信号)`、`src/main.tsx(包 ToastProvider)`。复用 computeBattleReport·HitProgress·EventLog·storage(loadBoard/saveBoard/removeBoard/importBoardJSON)·commitment(verifyBoardCommitment)·format(shortAddr)·GameView/eventLog——均 re-use,未重造。主线程 snarkjs-free 维持。
+
+### 2026-06-14 Task 3.9 收尾 — 错误呈现面策略 + reduced-motion 基线 + §9.4 手测全过 + 一个串号缺陷修复
+
+M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-load **0 console error**(仅 RR v7 future-flag warning)。
+
+**(决策 1)错误呈现面分界:瞬时 tx/动作错误 → 页内 Toast;§8 持久阻断 → PersistenceBanner(常驻 + 导入 CTA)。** §7.5/§7.6 要求失败用页内 toast(禁原生 alert)。3.8 已建 ToastProvider(此前只 PersistenceBanner 导入失败在用)。3.9 把瞬时 tx/动作错误接上 toast:
+- `useAttack`(开炮 NOT_TURN/REPEAT/OOB/BAD_PHASE…)、`useClaimTimeout`(认领 NOT_TIMEOUT/NOT_CLAIMANT)、`useAutoRespond` 的**证明/respond tx 失败** → 各自 catch 内 `mapContractError(err)` 成人话后 `setStatus(error)` **并** `toast.show(msg,'error')`(新增 `fail()` 收口,一处置态+toast)。内联红字撤除:SonarBoard 的 `attack-error <p>`、Game.tsx 的 `claim-error <p>` 删除(toast 是主面);auto-respond 的 ProofStatus 只保留 proving/sending/confirming/done(§7.5 两阶段进度必须可见),**error 不再内联**(toast-only,避免与 toast 双重呈现)。
+- **`useAutoRespond` 的 `blocked` 态(§8 棋盘缺失/承诺不符)绝不 toast**:那是**持续**阻断(必须导入恢复),toast 会自动消失;改由 Game.tsx 顶部常驻 `autorespond-blocked` 横幅 + PersistenceBanner(带导入 CTA)承载。这是「瞬时→toast、持久阻断→banner」的硬分界。
+- **`useLockFleet` 维持内联 ProofStatus error**(锁定按钮旁,上下文相关,§7.5「lock 错误靠近按钮」),**不**toast(避免双面);proving 两阶段不变。
+- 文案唯一来源仍 `mapContractError`(§7.6),绝不裸 revert 串。13 码映射的单测(errors.test.ts 24 例)已全覆盖;**§9.4 实测**:off-turn `attack` 真链上 revert → `mapContractError` 得「还没轮到你开炮…」(NOT_TURN);打已开炮格真 revert → 「这一格已经打过了…」(REPEAT);wrong-file 导入 → 页内 toast role=alert「该文件与本对局承诺不符…」;correct-file → info toast「部署文件已导入,棋盘已恢复。」——均真浏览器实测过。
+
+**(决策 2)reduced-motion:M3 只建**基线 + 脚手架**,完整退化随 M4 动效落地。** §7.4 要求 reduced-motion 时扫描线停转、抖动取消、**保留颜色反馈**;但声呐扫描/涟漪/脉冲/抖动/结算扫屏全是 M4。故 3.9:
+- **index.css 全局 `@media (prefers-reduced-motion: reduce)`**:即时完成现存 CSS **过渡**(transition-duration→0.01ms,如 FleetDock 的 transition-colors)。**刻意不 blanket 关 `animation`**——当前唯一 animation 是「在进行」spinner(animate-spin),它是功能性进度反馈且文案已同步表意,保留;且 CSS 无从判断哪条 animation 是装饰、哪条是功能,blanket 关会误伤 spinner。**颜色反馈(hit --flare / miss --phosphor·--foam)是着色非动效,本规则不碰,天然保留。**
+- **新增 `useReducedMotion` hook**(`src/hooks/useReducedMotion.ts`,matchMedia + useSyncExternalStore 订阅,SSR/node 安全降级 false)+ 纯读取口 `getReducedMotionSnapshot`(7 单测)。**M4 的 sweep/ripple/pulse/shake 必须在 JS 侧 `useReducedMotion()` 为真时退化为静态**(它们是 animation 非 transition,不被 CSS 基线自动停)——这是有意分工:CSS 基线管过渡,hook 管 M4 装饰动效的条件渲染。实测:emulate reduced-motion → matchMedia.matches=true、300ms 过渡探针 computed=0.01ms、命中格仍 --flare、布局不破、app 全可用。
+
+**(决策 3)§7.7 可见键盘焦点:index.css 全局 `:focus-visible` 基线(一处规则,免逐按钮)。** 大厅/对战/结算的按钮原先只吃浏览器默认焦点环(暗色低对比)。加一条 `:focus-visible { outline: 2px solid --phosphor; outline-offset: 2px }` 覆盖全部可聚焦元素;BoardGrid 格子另有更具体的内嵌环(utilities 层,晚于 base)→ 格子保留自己的 -2px inset 环,其它元素吃基线,二者同色一致。实测:create-game 按钮聚焦 computed outline = solid 2px rgb(53,224,200)。768/1280/1920 三档无横向溢出、<1024 棋盘上下堆叠、≥1024 并排(§7.2/§7.7)。
+
+**(缺陷修复,§9.4 实测暴露)`useAutoRespond` 的 inFlight 去重键漏了应答方地址 → demo 单标签同坐标串号。** 旧键 = `chainId:gameId:x,y`。demo 双账户在**同一标签页**共用同一 module 作用域;P1 round1 应答 A-1 后按设计**不清键**(堵 respond 已上链未 refetch 的重发窗口),P0 round2 又被打**同一坐标 A-1** 时,其 `runRespond` 撞上 P1 残留的同坐标键 `31337:1:0,0` 被 `if(inFlight.has(key)) return` 静默跳过 → **P0 永不自动应答 → 假超时判负**。这是 §7.1/§9.4 一等场景(单标签双账户对打)的真 bug(生产分标签页本就不同 module 作用域、无碰撞)。修复:键加 **address 段** `chainId:gameId:address(小写):x,y`,两方各占各键;`gamePrefix`(clearInFlight 用)仍 `chainId:gameId:` 前缀,覆盖该局两方全部键不变。`flightKey`/`gamePrefix` 导出 + 7 单测(`useAutoRespond.test.ts`:同坐标异地址异键 / 同址同坐标同键 / 大小写归一 / gamePrefix 覆盖两方)。实测:reload 后 P0 对 A-1 立刻自动应答、3 整回合双向 auto-respond 全通。
+
+**(单测)** 新增 `useReducedMotion.test.ts`(7)+ `useAutoRespond.test.ts`(7);web 352 → **364 全绿**;tsc/build 干净;**主 bundle snarkjs-free 维持**(build 后 grep `index-*.js`:groth16/snarkjs/ffjavascript/exportSolidityCallData/powersOfTau/wtns/plonk/fflonk **全 0**;worker chunk 含 groth16×4 + exportSolidityCallData×3)。root `pnpm test:all` 四包全绿(circuits/contracts/e2e[真 anvil+证明 A/B/C]/web)。
+
+**(§9.4 手测全 7 项,真浏览器 pnpm demo + playwright,单标签双账户)**:Battleship `0x8a79…`,anvil 31337,P0 `0xf39F…2266` / P1 `0x7099…79C8`。
+1. **布阵非法提示**:航母(len5)悬停 H-1 水平(出界)→ 仅在界 (7,0)(8,0)(9,0) 染 --flare、出界格不折行染 row1(3.5 修复保持)、点击 no-op(进度仍 0/5、航母仍手持)。✓
+2. **锁定舰队全流程**:摆满 5 船(17 占格)→ 锁定舰队 → board 证明(亚秒)+ createGame → /game/1 上锁盘(17 ▦ disabled)+「🔒 已锁定·10×10·17 占格」+ 导出部署文件 + 等待「声呐搜索对手中…#1」+ localStorage 正式键写入。✓
+3. **双账户互打三回合**:P1 join(摆 5 船 + R 旋转实测预览翻转 + joinGame)→ 无手动刷新自动进对战幕。R1 P0→A-1 命中、R2 P1→A-1 命中、R3 P0→J-10 未命中;每回合**自动应答零手动点击**、回合/进度/事件日志(带时间戳)/双盘双视角标记全对;视角切换翻转(P0↔P1 回合/对手/视角全翻)。✓
+4. **hit 与 miss 动效(功能标记)**:hit = --flare 实心 `bg-flare/80` ✸;miss = `bg-console` ◦ 余晖点,双盘可辨。✓(动画是 M4)
+5. **刷新恢复**:对战中 reload → 相位/双方命中(1/17)/坐标级 hit·miss 标记/己方盘轮廓全从链上+storage 恢复;另实测**欠应答 reload 后自动 re-fire**(P0 reload → A-1 自动应答)。✓(§10)
+6. **清空 localStorage 警告 + 导入恢复**:清 P1 键 + reload → PersistenceBanner role=alert(reason=missing)+ 导入按钮;wrong-file(承诺≠本局)→ 拒绝 + toast「该文件与本对局承诺不符…」+ 键未写;correct-file → 键写入 + 横幅自隐 + info toast +「无重载」标记恒 1 + 己方盘轮廓显出。✓(注:playwright 的 file-chooser 不触发隐藏 aria-hidden file input 的 React onChange[工具侧 quirk],改用等价 `change` 事件派发真 File 跑同一 onFile 生产代码路径)
+7. **reduced-motion 模式**:emulate `prefers-reduced-motion: reduce` + reload → matchMedia.matches=true、过渡探针 0.01ms、命中格仍 --flare、双盘+状态全在、布局不破、app 全可用。✓
+**额外**:claimTimeout 全程(evm_increaseTime+301 → P1 义务方无按钮、P0 claimant「认领超时胜利」可点 → GameFinished → 自动进结算幕「你赢了·对手超时未应答·总回合3」+ 进 finish 清我方键 only)。crosshair 悬停 overlay(F-6,3 span)。0 console error(仅 RR v7);main snarkjs-free 再 grep 全 0。
+
+**M3 DoD 达成**:三幕可玩(lobby→placement→battle→finish 全链路实测)/ §9.4 全 7 项过(证据如上)/ Worker 证明管线(board+shot,worker chunk snarkjs)+ 持久化(localStorage 正式键 + 导出/导入恢复 + §10 reload)+ 错误映射(13 码 → mapContractError → 页内 toast)就位。
+
+**文件**:新增 `src/hooks/{useReducedMotion.ts, useReducedMotion.test.ts, useAutoRespond.test.ts}`;改 `src/styles/index.css(+reduced-motion 基线 + :focus-visible 基线)`、`src/hooks/{useAttack.ts, useClaimTimeout.ts, useAutoRespond.ts}(+useToast/fail 接 toast;useAutoRespond inFlight 键加 address + 导出 flightKey/gamePrefix)`、`src/components/board/SonarBoard.tsx(删 attack-error 内联)`、`src/pages/Game.tsx(删 claim-error 内联;auto-respond ProofStatus 排除 error 态)`。复用 Toast/useToast·mapContractError·ProofStatus·PersistenceBanner——均 re-use,未重造 M4 动效(只建 reduced-motion 脚手架 + 功能确认)。主线程 snarkjs-free 维持。

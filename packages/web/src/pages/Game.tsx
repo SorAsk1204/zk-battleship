@@ -511,8 +511,14 @@ function BattleStatus({
         </div>
       )}
 
-      {/* 自动应答状态(shot 证明 + 链上确认,§7.5 两阶段);proving 文案带坐标。 */}
-      {respondStatus.phase !== 'idle' && respondStatus.phase !== 'blocked' && (
+      {/* 自动应答状态(shot 证明 + 链上确认,§7.5 两阶段);proving 文案带坐标。
+          progress(proving/sending/confirming)+ done 内联展示(§7.5 两阶段进度必须可见);
+          **error 不在此内联**(toast-only,见 useAutoRespond.catch → useToast),避免与 toast 双重呈现;
+          **blocked 也不在此**(顶部常驻横幅 + PersistenceBanner 承载,见上)。 */}
+      {(respondStatus.phase === 'proving' ||
+        respondStatus.phase === 'sending' ||
+        respondStatus.phase === 'confirming' ||
+        respondStatus.phase === 'done') && (
         <ProofStatus
           status={respondStatus}
           circuit="shot"
@@ -521,7 +527,9 @@ function BattleStatus({
         />
       )}
 
-      {/* 认领超时胜利按钮(§7.6 动词):仅 claimant 且已超时可见可点;--flare 提示(呼吸是 M4)。 */}
+      {/* 认领超时胜利按钮(§7.6 动词):仅 claimant 且已超时可见可点;--flare 提示(呼吸是 M4)。
+          认领失败(NOT_TIMEOUT/NOT_CLAIMANT)经页内 Toast 呈现(useClaimTimeout → useToast),
+          按钮下不再挂常驻红字。 */}
       {canClaim && contract && (
         <button
           type="button"
@@ -534,11 +542,6 @@ function BattleStatus({
             ? '认领中…'
             : '认领超时胜利'}
         </button>
-      )}
-      {claimStatus.phase === 'error' && (
-        <p className="font-mono text-[11px] text-flare" data-testid="claim-error">
-          {claimStatus.message}
-        </p>
       )}
     </div>
   );

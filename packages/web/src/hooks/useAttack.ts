@@ -14,6 +14,9 @@
  *
  * 错误:经 mapContractError 成人话(NOT_TURN=没轮到你开炮 / REPEAT=这格打过了 / OOB=越界 / BAD_PHASE=
  * 相位过期)。REPEAT 已在前端预检挡掉绝大多数,但链上仍是权威(并发 / 本地位图过期时兜底)。
+ * **错误的主呈现面是页内 Toast(§7.5/§7.6,Task 3.9)**:开炮是瞬时动作,失败用一条可自动消失的
+ * toast 告知「发生了什么 + 怎么办」最自然(比在声呐屏下挂一行常驻红字干净)。status.error 仍保留供
+ * 调用方收口乐观格,但不再内联渲染那行红字(toast 是主面)。
  *
  * 纪律:不 import snarkjs(attack 无证明);命令式 await(同 useLockFleet,一次性命令序列直线最清);
  * 防重入(runningRef:在途拒绝再次发起,防连点双发)。
@@ -23,6 +26,7 @@ import { usePublicClient, useWriteContract } from 'wagmi';
 import { battleshipAbi } from '../lib/abi.ts';
 import { type Address } from '../lib/contracts.ts';
 import { mapContractError } from '../lib/errors.ts';
+import { useToast } from '../components/Toast.tsx';
 
 /** 开炮管线离散状态。 */
 export type AttackStatus =
@@ -59,6 +63,7 @@ export type UseAttackResult = {
 export function useAttack(alreadyFired: (cellIdx: number) => boolean): UseAttackResult {
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
+  const toast = useToast();
   const [status, setStatus] = useState<AttackStatus>({ phase: 'idle' });
   const runningRef = useRef(false);
 
@@ -67,16 +72,26 @@ export function useAttack(alreadyFired: (cellIdx: number) => boolean): UseAttack
     setStatus({ phase: 'idle' });
   }, []);
 
+  // 失败收口:置 error 态(供调用方清乐观格)+ 推一条页内 toast(§7.5/§7.6 主呈现面)。
+  // message 已是 mapContractError 的人话(NOT_TURN/REPEAT/OOB/BAD_PHASE…),不再内联渲染红字。
+  const fail = useCallback(
+    (message: string) => {
+      setStatus({ phase: 'error', message });
+      toast.show(message, 'error');
+    },
+    [toast],
+  );
+
   const fire = useCallback(
     async ({ gameId, contract, x, y }: FireParams, onFired?: (x: number, y: number) => void): Promise<boolean> => {
       if (runningRef.current) return false; // 重入保护(防连点双发)
       // REPEAT 前端预检(§7.3):已开炮的格(含在飞 pending)直接拦,不发必 revert 的交易。
       if (alreadyFired(y * 10 + x)) {
-        setStatus({ phase: 'error', message: '这一格已经打过了。请选择一个还没炮击过的目标。' });
+        fail('这一格已经打过了。请选择一个还没炮击过的目标。');
         return false;
       }
       if (!publicClient) {
-        setStatus({ phase: 'error', message: '链客户端未就绪,请稍后重试。' });
+        fail('链客户端未就绪,请稍后重试。');
         return false;
       }
       runningRef.current = true;
@@ -96,14 +111,14 @@ export function useAttack(alreadyFired: (cellIdx: number) => boolean): UseAttack
         setStatus({ phase: 'idle' });
         return true;
       } catch (err) {
-        // tx 失败(NOT_TURN/REPEAT/相位过期/用户层错误):人话化;乐观标记由调用方在失败回调里清。
-        setStatus({ phase: 'error', message: mapContractError(err) });
+        // tx 失败(NOT_TURN/REPEAT/相位过期/用户层错误):人话化 + toast;乐观标记由调用方在失败回调里清。
+        fail(mapContractError(err));
         return false;
       } finally {
         runningRef.current = false;
       }
     },
-    [alreadyFired, publicClient, writeContractAsync],
+    [alreadyFired, publicClient, writeContractAsync, fail],
   );
 
   return { status, fire, reset };

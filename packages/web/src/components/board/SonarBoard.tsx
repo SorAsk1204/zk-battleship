@@ -157,16 +157,12 @@ export default function SonarBoard({
       onCellFocus={(x, y) => isMyAttackTurn && setAim({ x, y })}
       onLeave={() => setAim(null)}
     />
-      {/* 开炮链上状态(§7.5 链上确认段;无假进度,只 spinner 文案)+ 失败文案。证明在 respond 端,
-          attack 无证明,故这里只有「提交/确认/失败」三态。 */}
+      {/* 开炮链上进度(§7.5 链上确认段;无假进度,只文案)。证明在 respond 端,attack 无证明,
+          故这里只有「提交/确认」两态。**失败不在此内联**——开炮失败经页内 Toast 呈现(§7.5/§7.6,
+          useAttack.fail → useToast),声呐屏下不再挂常驻红字。 */}
       {(attackStatus.phase === 'sending' || attackStatus.phase === 'confirming') && (
         <p className="font-mono text-[11px] text-phosphor" data-testid="attack-status">
           {attackStatus.phase === 'sending' ? '提交开炮…' : '等待链上确认开炮…'}
-        </p>
-      )}
-      {attackStatus.phase === 'error' && (
-        <p className="font-mono text-[11px] text-flare" data-testid="attack-error">
-          {attackStatus.message}
         </p>
       )}
     </div>

@@ -7,12 +7,15 @@
  * refetch → phase 翻 Finished,对战幕自动切结算幕(§7.1)。
  *
  * 与 useAttack 同构(单 tx、命令式、防重入);无证明、不 import snarkjs。
+ * **失败主呈现面 = 页内 Toast(§7.5/§7.6,Task 3.9)**:认领是瞬时动作,NOT_TIMEOUT/NOT_CLAIMANT
+ * 这类「点早了 / 不该你认领」用一条可消失的 toast 告知最自然;status.error 仍保留但不再内联红字。
  */
 import { useCallback, useRef, useState } from 'react';
 import { usePublicClient, useWriteContract } from 'wagmi';
 import { battleshipAbi } from '../lib/abi.ts';
 import { type Address } from '../lib/contracts.ts';
 import { mapContractError } from '../lib/errors.ts';
+import { useToast } from '../components/Toast.tsx';
 
 export type ClaimStatus =
   | { phase: 'idle' }
@@ -28,14 +31,24 @@ export type UseClaimTimeoutResult = {
 export function useClaimTimeout(): UseClaimTimeoutResult {
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
+  const toast = useToast();
   const [status, setStatus] = useState<ClaimStatus>({ phase: 'idle' });
   const runningRef = useRef(false);
+
+  // 失败收口:置 error 态 + 推一条页内 toast(§7.5/§7.6 主呈现面);message 已人话化。
+  const fail = useCallback(
+    (message: string) => {
+      setStatus({ phase: 'error', message });
+      toast.show(message, 'error');
+    },
+    [toast],
+  );
 
   const claim = useCallback(
     async (gameId: bigint, contract: Address) => {
       if (runningRef.current) return;
       if (!publicClient) {
-        setStatus({ phase: 'error', message: '链客户端未就绪,请稍后重试。' });
+        fail('链客户端未就绪,请稍后重试。');
         return;
       }
       runningRef.current = true;
@@ -52,12 +65,13 @@ export function useClaimTimeout(): UseClaimTimeoutResult {
         // 成功:不留 idle 文案(GameFinished watch 会把页面切到结算幕);保持 confirming→自然卸载。
         setStatus({ phase: 'idle' });
       } catch (err) {
-        setStatus({ phase: 'error', message: mapContractError(err) });
+        // NOT_TIMEOUT(点早了)/ NOT_CLAIMANT(该你行动)等:人话化 + toast。
+        fail(mapContractError(err));
       } finally {
         runningRef.current = false;
       }
     },
-    [publicClient, writeContractAsync],
+    [publicClient, writeContractAsync, fail],
   );
 
   return { status, claim };

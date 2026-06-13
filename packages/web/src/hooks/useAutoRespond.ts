@@ -26,6 +26,12 @@
  *
  * 纪律:不 import snarkjs(shot 证明经 useProver 走 worker,主线程 snarkjs-free);错误经 mapContractError
  * 人话化;命令式 await 直线(同 useLockFleet/useAttack)。
+ *
+ * 错误两类、呈现面不同(Task 3.9 §7.5/§7.6):
+ *   - **瞬时 tx/证明错误**(catch 路径,可重试)→ 页内 Toast(error)+ status.error;
+ *   - **§8 阻断**(blocked:棋盘缺失 / 承诺不符,**持续**、需导入恢复)→ **不**toast(toast 会自动消失,
+ *     而阻断必须一直在),改由 Game.tsx 顶部常驻横幅 + PersistenceBanner(带导入 CTA)呈现。
+ *     这是「瞬时→toast、持久阻断→banner」分界的关键:别把需要持续行动指引的阻断态变成会消失的 toast。
  */
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { usePublicClient, useWriteContract } from 'wagmi';
@@ -36,6 +42,7 @@ import { type Address } from '../lib/contracts.ts';
 import { mapContractError } from '../lib/errors.ts';
 import { toShotProofArg } from '../lib/proofArgs.ts';
 import { loadBoard } from '../lib/storage.ts';
+import { useToast } from '../components/Toast.tsx';
 import type { GameView } from './gameView.ts';
 import { Phase } from './gameView.ts';
 import { prove } from './useProver.ts';
@@ -64,15 +71,27 @@ export type AutoRespondStatus =
 const MISSING_BOARD_MESSAGE =
   '本地棋盘缺失或与链上承诺不一致,无法应答此炮击,将超时判负。请导入此前导出的部署文件。';
 
-/** 同一炮击的去重键(chainId:gameId:x,y)。module 级(跨 StrictMode 实例 / 重渲染)。 */
+/**
+ * 同一炮击的去重键。module 级(跨 StrictMode 实例 / 重渲染)。
+ *
+ * 键含**应答方地址**(defender),不仅是 chainId:gameId:x,y——关键修复(Task 3.9 §9.4 实测暴露):
+ * demo 双账户在**同一标签页**对打时,P0/P1 共用同一 module 作用域;若 P0 与 P1 先后被攻击到**同一坐标**
+ * (如双方都被打 A-1),而成功后不清键(设计:堵 respond 已上链未 refetch 的重发窗口),则后一位的
+ * 应答会撞上前一位残留的同坐标键被静默跳过 → 永不应答 → 假超时。加入 address 段后两方各占各键,
+ * 不再串号(生产环境分标签页本就不同 module 作用域、无此碰撞;但 demo 单标签是 §7.1/§9.4 的一等场景)。
+ */
 const inFlight = new Set<string>();
 
-function flightKey(chainId: number, gameId: bigint, x: number, y: number): string {
-  return `${chainId}:${gameId.toString()}:${x},${y}`;
+/**
+ * 同一炮击的去重键(导出供单测,纯函数)。键段:`chainId:gameId:address:x,y`。
+ * address 小写归一(地址大小写不一致不应被当成两把键)。
+ */
+export function flightKey(chainId: number, gameId: bigint, address: Address, x: number, y: number): string {
+  return `${chainId}:${gameId.toString()}:${address.toLowerCase()}:${x},${y}`;
 }
 
-/** 某局的键前缀(chainId:gameId:),clearInFlight 据此清掉该局所有在途/阻断键。 */
-function gamePrefix(chainId: number, gameId: bigint): string {
+/** 某局的键前缀(chainId:gameId:),clearInFlight 据此清掉该局所有在途/阻断键(含所有地址段)。导出供单测。 */
+export function gamePrefix(chainId: number, gameId: bigint): string {
   return `${chainId}:${gameId.toString()}:`;
 }
 
@@ -106,9 +125,10 @@ function emitRelease(): void {
  * 清掉某局的全部 inFlight 键(在途 + 阻断占的键)并 emit 释放信号(供 PersistenceBanner 导入成功后调用,
  * 闭合 3.7 Rec 1:导入棋盘 → 释放 blocked 占的键 + 触发 effect 重评估 → 自动 re-fire,**无需重载**)。
  *
- * 清「该局所有键」而非「具体某炮键」:导入时调用方未必知道当前 pending 是哪一炮(blocked 态下
- * runRespond 早 return,respondingCoord 已被相位收口清空);按 gameId 前缀清是安全的——同一局同一时刻
- * 至多一炮在途,清掉它即可。跨局键(别的 gameId)不受影响(前缀不匹配)。
+ * 清「该局所有键」(含所有应答方地址段)而非「具体某炮键」:导入时调用方未必知道当前 pending 是哪一炮
+ * (blocked 态下 runRespond 早 return,respondingCoord 已被相位收口清空);按 gameId 前缀清是安全的——
+ * 前缀 `chainId:gameId:` 覆盖该局两方地址的全部键,清掉即可让欠应答方重评估 re-fire。跨局键(别的
+ * gameId)不受影响(前缀不匹配)。
  *
  * @param chainId 链 id(键的第一段)
  * @param gameId  对局 id(键的第二段)
@@ -148,6 +168,7 @@ export function useAutoRespond({
 }: UseAutoRespondArgs): UseAutoRespondResult {
   const publicClient = usePublicClient();
   const { writeContractAsync } = useWriteContract();
+  const toast = useToast();
   const [status, setStatus] = useState<AutoRespondStatus>({ phase: 'idle' });
   const [respondingCoord, setRespondingCoord] = useState<string | null>(null);
 
@@ -176,7 +197,7 @@ export function useAutoRespond({
       if (!publicClient || !contract || chainId === undefined || !address) return;
       if (view.myCommitment === undefined) return; // 非玩家不应到此(shouldRespond 已挡)
 
-      const key = flightKey(chainId, gameId, rx, ry);
+      const key = flightKey(chainId, gameId, address, rx, ry);
       // module 级去重:已有同炮击在途 / 已阻断(本实例或 StrictMode 兄弟实例) → 不重跑。
       // 阻断态也占键不释放:防「棋盘缺失 → 每次无关 refetch 重跑 loadBoard 再 setStatus」的渲染抖动;
       // 用户导入棋盘的重试路径 = 重新加载页面(module inFlight 随之清空,重开自动补应答,§10)/ 3.8 导入闭环。
@@ -227,13 +248,17 @@ export function useAutoRespond({
         setStatus({ phase: 'done' });
         localRunningRef.current = null;
       } catch (err) {
-        // 证明 / tx 失败:人话化,清 module 键允许重试(下次 refetch / 重渲染可重跑)。
-        setStatus({ phase: 'error', message: mapContractError(err) });
+        // 证明 / tx 失败(瞬时,可重试):人话化 + 页内 toast(§7.5/§7.6);清 module 键允许重试
+        // (下次 refetch / 重渲染可重跑)。注意:**blocked(§8 棋盘缺失/承诺不符)不走这里、不 toast**
+        // ——那是持续阻断,由 Game.tsx 常驻横幅 + PersistenceBanner 承载(见上面 setStatus blocked 分支)。
+        const message = mapContractError(err);
+        setStatus({ phase: 'error', message });
+        toast.show(message, 'error');
         inFlight.delete(key);
         localRunningRef.current = null;
       }
     },
-    [publicClient, writeContractAsync, contract, chainId, address, gameId, view.myCommitment, view.myIdx],
+    [publicClient, writeContractAsync, contract, chainId, address, gameId, view.myCommitment, view.myIdx, toast],
   );
 
   // 触发 effect:满足条件即自动开跑(去重在 runRespond 内)。依赖「这一炮的坐标基元 + 跑函数 + 释放信号」——
