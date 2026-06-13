@@ -185,3 +185,39 @@ wagmi config 必须静态,合约地址才运行时 fetch;chain 用 viem 内置 a
 **依赖**:`wagmi ^2.19.5`(实装 2.19.5)+ `@tanstack/react-query ^5`(wagmi v2 peer);viem 仍 2.52.2(wagmi peer 解析到同版本,类型对齐)。pnpm 11 ignored-builds(bufferutil/keccak/utf-8-validate,walletconnect 传递依赖的可选原生加速包)**显式置 false**(本仓 demo 走自建 connector 不碰 walletconnect,纯 JS 回退够,同 blake-hash 避免依赖 MSVC)。
 
 **文件**:`src/lib/{wagmi.ts, demoAccounts.ts, proofArgs.ts}`(+ 各自 .test.ts)、`src/components/AccountSwitcher.tsx`(新增);`src/workers/{proverProtocol.ts, prover.worker.ts, snarkjs.d.ts}`、`src/hooks/{useProver.ts, useProver.test.ts}`、`src/main.tsx`、`src/components/Layout.tsx`、`src/pages/Lobby.tsx`(改);`pnpm-workspace.yaml`(allowBuilds)。web 测试 93 → 103 全绿,tsc/build 干净,root test:all 全绿。
+
+### 2026-06-13 Task 3.4 大厅 — 信息架构裁决 + lockFleet 管线抽取 + 事件归约列表
+
+真浏览器验收(pnpm demo + playwright)全程通过,**0 console error**(仅 React-Router v7 future-flag warning,同 3.3,与本任务无关)。证据见下「browser」。
+
+**(IA-1)创建 / 加入是「入口」,布船证明 + 交易在「布阵幕」,不在大厅。** Design §7.1 把大厅定为「创建对局 | 输入 gameId 加入 | 进行中对局列表」三件事;§7.3 把 board 证明 + createGame/joinGame 交易明确归到布阵幕的「锁定舰队」。故大厅**不再持有任何证明/交易逻辑**(3.3 临时挂在 Lobby 的 createGame 全栈验收流程已移除):
+- 创建对局 = 按钮 → 导航 `/game/new`(布阵幕 create 模式);
+- 加入对局 = 数字 gameId 输入 + 「加入」→ 导航 `/game/:id`(3.6 起按 phase 呈现 join 布阵幕);
+- 进行中对局列表 = `useGameList` 扫事件重建 + `watchContractEvent` 增量,点行 → `/game/:id`。**无手动刷新按钮**(§7.1 用户永不手动刷新)。
+
+**(IA-2)新增 `/game/new` 路由(create),`/game/:id` 仍是占位(3.6 建相位机)。** v6 静态段优先于动态段,`/game/new` 不会被 `/game/:id` 捕获(顺序仅为清晰)。**join-by-id 导航落到 `/game/:id` 占位页是 3.4 预期**——完整 join(在那里渲染 join 布阵幕)于 3.6 收口;3.4 只验证「列表/输入/行点击 → 正确导航」。
+
+**(IA-3)`/game/new` 用临时固定布局,3.5 只换 UI、复用同一 `useLockFleet`。** 真实布阵交互(FleetDock 点选/预览/R 旋转/非法染红)是 3.5 的活;3.4 用一个**显式围栏标注**的合法固定布局(5 船贴左逐行,validateBoard 必过)+「锁定舰队」按钮,跑**真证明、真交易、真持久化、真事件**,让 create 在 3.4 端到端可用。NewGame 页明确标注「临时:3.5 将替换为真实布阵交互」。ExportButton(§8 导出部署文件)推迟到 3.5 与真实布阵一起做。
+
+**(管线)`useLockFleet` —— 从 3.3 Lobby 抽出并泛化(create → create|join)的可复用锁定管线。** 离散 status `{idle|proving|sending|confirming|done|error}`(done 带 mode+gameId+hash),供 ProofStatus 渲染 + 调用方(NewGame)在 done 时导航。流程:`savePending/saveBoard`(§8 上链前先落盘)→ worker `prove('board')`(proving,本地计算)→ `writeContractAsync` create/joinGame(sending,本地签名发 raw tx)→ `waitForTransactionReceipt`(confirming,链上确认)→ 解析 `GameCreated`/`GameJoined` 取 gameId →(create)`promotePending`。
+- **为何命令式(writeContractAsync + publicClient.waitForTransactionReceipt)而非 useWaitForTransactionReceipt 钩子**:本流程是「按一次按钮跑一条龙」的一次性命令序列;钩子是声明式按渲染驱动,把「等回执」塞钩子要把 hash 提升为 state、再用 effect 串下一步,把线性流程拆成隐式状态机,难读且易竞态。命令式 await 一条直线,phase 转换显式(3.3 已实证此路在 anvil + local-account connector 通)。两段等待文案仍严格区分(§7.5)。
+
+**(存储正确性 create vs join,收口 3.3 Lobby 注释警示的 pending 槽冲突)**:storage `pendingKey` 不含 gameId,故同账户同合约只有一个 pending 槽。
+- **create**:gameId 上链才知 → 先 `savePending`(不含 gameId)→ 拿到 gameId 后 `promotePending` 迁正式键 `bs:{chainId}:{contract}:{gameId}:{addr}`。
+- **join**:gameId **入参即已知** → 直接 `saveBoard`(写正式键),**完全不碰 pending 槽**。
+如此 create 的待定布阵与 join 的待定布阵不再争同一 pending 槽(3.3 警示的 last-writer-wins / promote 迁错布阵不会发生)。写盘失败(`StorageWriteError`,§8 = 必然超时输)单独成**阻断态**,文案点名后果,不继续上链。
+
+**(ProofStatus §7.5 两阶段,纯展示,create 现用 / 对战幕将来复用)**:本地计算 = 「正在编译舰队部署证明… {stage} {byte%}」,数据来自 `useProverProgress(circuit)`(worker Content-Length 流式读出,**非假进度条**);链上 = 「提交交易中…」/「等待链上确认… tx 0x…」+ inline spinner(无字节/无百分比——链上耗时不可预估,给百分比即假进度)。**不弹模态**;idle→null;done/error 干净终态。状态由 useLockFleet 喂入(props),circuit 由调用方指定(布阵=board,3.7 应答=shot)。
+
+**(useGameList 归约 + live)**:列表真理 = 「把一串合约事件按 gameId 折叠成当前状态」,抽成**纯函数** `gameListReducer`(node 环境可单测,本仓无 testing-library):`reduceGameEvents` 按 gameId 单调升级 status(created→waiting / joined→active / finished→剔除),**对事件到达顺序不敏感**(status 单调,乱序折叠出同一终态)、**幂等**(重复 log 不改结果);`buildInProgressList` 过滤 waiting+active、按 createdPos 倒序(最新在前)。`useGameList` 负责取数:`getLogs` 从 `deployBlock` 回填(§10 indexer-less:本地全扫,测试网改 fromBlock=max(deployBlock, head-N),已留注记)+ 三个 `useWatchContractEvent`(GameCreated/Joined/Finished)增量,投影入 ref 事件池(按 pos 去重),version state 触发 useMemo 重算。
+
+**(单测)**新增 `gameListReducer.test.ts`(18 例:归类/顺序无关/幂等/过滤排序/多局并存)+ `useLockFleet.test.ts`(6 例:`parseCreatedGameId`/`parseJoinedGameId` 用 viem encodeEventTopics 造真实 log 解析 + 无事件即抛)。web 测试 103 → **127 全绿**;tsc/build 干净;**主 bundle snarkjs-free 维持**(build 后 grep `index-*.js`:groth16/snarkjs/ffjavascript/exportSolidityCallData/powersOfTau/wtns **全 0**;worker chunk 含 groth16+exportSolidityCallData)。
+
+**(browser 证据,pnpm demo + playwright)**:Battleship `0x9fe46…`,anvil 31337。
+- P0:大厅→创建对局→`/game/new`→锁定舰队→ ProofStatus 实测阶段序列(轮询 `data-testid=proof-status` 的 `data-phase`):`proving`「正在编译舰队部署证明… 拉取电路 wasm 4.1/4.1MB · 100%」→「计算见证(witness)」→「生成 Groth16 证明」→ `sending`「提交交易中(本地签名 → 广播)…」→ done 导航 `/game/1`;返回大厅 #1 出现在列表(`#1 等待对手 P0 0xf39F…2266 · P1 待加入`)。
+- 切 P1:同 4 局全部显示 `等待对手`(P1 视角可加入);点行 → `/game/1` 占位(3.4 预期)。
+- **live(watchContractEvent,无手动刷新)**:大厅 tab 保持不动(`/`,未 reload),另一 tab 创建第 4 局,大厅列表自动从 `[3,2,1]` → `[4,3,2,1]`(最新在前)。
+- join-by-id 输入「2」→「加入」启用 → `/game/2`;空输入时「加入」禁用。
+- 持久化(§8):localStorage 见各局正式键 `bs:31337:0x9fe46…:{1,3,4}:0xf39f…`(P0,promotePending 后无残留 `:pending:` 键)。0 console error。
+
+**文件**:`src/hooks/{useLockFleet.ts, useGameList.ts, gameListReducer.ts}`(新增)+ `{gameListReducer.test.ts, useLockFleet.test.ts}`(新增)、`src/components/ProofStatus.tsx`(新增)、`src/pages/{NewGame.tsx(新增), Lobby.tsx(重写)}`、`src/App.tsx`(+`/game/new` 路由)。复用 3.1/3.2/3.3:storage/commitment/salt/proofArgs/errors/format/useProver/wagmi/abi 均 re-use,未重造。

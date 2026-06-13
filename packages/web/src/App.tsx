@@ -3,6 +3,7 @@ import { Link, Route, Routes } from 'react-router-dom';
 import Layout from './components/Layout.tsx';
 import Game from './pages/Game.tsx';
 import Lobby from './pages/Lobby.tsx';
+import NewGame from './pages/NewGame.tsx';
 
 // dev-only 证明管线验收页(Task 3.2)。懒加载 + import.meta.env.DEV 守卫:
 // production 构建下 import.meta.env.DEV 折叠为 false,整个分支被 Rollup 死代码消除,
@@ -28,6 +29,8 @@ export default function App() {
     <Routes>
       <Route element={<Layout />}>
         <Route path="/" element={<Lobby />} />
+        {/* /game/new(创建对局,布阵幕 create)须在 /game/:id 之前;v6 静态段本就优先于动态段,顺序仅为清晰 */}
+        <Route path="/game/new" element={<NewGame />} />
         <Route path="/game/:id" element={<Game />} />
         {DevProve && (
           <Route

@@ -1,196 +1,179 @@
 /**
- * Lobby —— M3 落地真实大厅(Task 3.4 polish UX)。
+ * Lobby —— 大厅(Design §7.1:创建对局 | 输入 gameId 加入 | 进行中对局列表[扫事件重建])。
  *
- * 本任务(3.3)只在此挂一个**最小但诚实**的 createGame 流程作为全栈验收载体:
- *   load deployment → 固定合法布阵 + 新 randomSalt → savePending → worker 出 board 证明 →
- *   writeContract createGame(commitment, calldata) → 等回执 → 解析 GameCreated/gameId →
- *   promotePending。每个状态都对应真实工作,无假进度;错误经 mapContractError 成人话。
+ * 信息架构(Task 3.4 决策,见 DECISIONS):
+ *   - 创建对局:按钮 → 导航 /game/new(布阵幕 create 模式;真正的 board 证明 + createGame 交易
+ *     在那里的「锁定舰队」上发生,**不在大厅**)。
+ *   - 加入对局:数字 gameId 输入 + 「加入」→ 导航 /game/:id(3.6 起按 phase 呈现;若 viewer 非玩家
+ *     且 phase=Created 则 3.6 在那里渲染布阵幕 join 模式)。3.4 期间 /game/:id 仍是占位——预期之内,
+ *     完整 join 在 3.6 收口。
+ *   - 进行中对局列表:useGameList(getLogs 回填 + watchContractEvent 增量),点行 → /game/:id。
+ *     **无手动刷新按钮**(§7.1:用户永不手动刷新;创建第二局列表自动更新)。
  *
- * 3.4 会把这块替换成真正的大厅(列表/创建/加入);此处刻意从简(单按钮 + 状态行 + 证明进度),
- * 仅证明 worker→calldata→wagmi→anvil→事件 的完整链路通了。仅 demo 构建可用(需 deployment + 账户)。
+ * 本页不再持有任何证明 / 交易逻辑(Task 3.3 的临时 createGame 已移除,泛化进 useLockFleet,
+ * 由 /game/new 调用)。demo 账户切换器在 Layout 右上角(本页只读当前账户用于展示)。
  */
 import { useState } from 'react';
-import { parseEventLogs } from 'viem';
-import { useAccount, usePublicClient, useWriteContract } from 'wagmi';
-import { battleshipAbi } from '../lib/abi.ts';
-import type { Board } from '../lib/boardLogic.ts';
-import { computeCommitment } from '../lib/commitment.ts';
-import { type Deployment, loadDeployment, reloadDeployment } from '../lib/contracts.ts';
-import { mapContractError } from '../lib/errors.ts';
-import { toBoardProofArg } from '../lib/proofArgs.ts';
-import { randomSalt } from '../lib/salt.ts';
-import { savePending, promotePending } from '../lib/storage.ts';
-import { prove, useProverProgress } from '../hooks/useProver.ts';
-import { IS_DEMO } from '../lib/wagmi.ts';
-import { toBoardInputs } from '../lib/commitment.ts';
+import { useNavigate } from 'react-router-dom';
+import { useAccount } from 'wagmi';
+import { shortAddr } from '../lib/format.ts';
+import { useGameList } from '../hooks/useGameList.ts';
+import type { GameRow } from '../hooks/gameListReducer.ts';
 
-// 固定合法布阵(同 DevProve fixture):5 船贴左逐行,长度 [5,4,3,3,2],validateBoard 必过。
-const FIXED_BOARD: Board = [
-  { x: 0, y: 0, dir: 0 },
-  { x: 0, y: 1, dir: 0 },
-  { x: 0, y: 2, dir: 0 },
-  { x: 0, y: 3, dir: 0 },
-  { x: 0, y: 4, dir: 0 },
-];
-
-type Flow =
-  | { phase: 'idle' }
-  | { phase: 'proving' }
-  | { phase: 'sending' } // 交易已构造,等钱包/节点接收(本地签名→eth_sendRawTransaction)
-  | { phase: 'confirming'; hash: string }
-  | { phase: 'done'; hash: string; gameId: bigint; p0: string }
-  | { phase: 'error'; message: string };
+/** status → 中文 chip 文案(§7.6:动词化 / 行动指引)。 */
+function statusLabel(status: GameRow['status']): string {
+  return status === 'waiting' ? '等待对手' : '进行中';
+}
 
 export default function Lobby() {
+  const navigate = useNavigate();
   const { address, isConnected } = useAccount();
-  const publicClient = usePublicClient();
-  const { writeContractAsync } = useWriteContract();
-  const [flow, setFlow] = useState<Flow>({ phase: 'idle' });
-  // board 证明进度(worker 本地计算阶段);proving 期间渲染 fetch/witness/prove。
-  const progress = useProverProgress('board');
+  const { games, loading, error } = useGameList();
 
-  const busy = flow.phase === 'proving' || flow.phase === 'sending' || flow.phase === 'confirming';
+  // 加入用 gameId 输入:仅数字;空 / 非法时「加入」禁用。
+  const [joinId, setJoinId] = useState('');
+  const trimmed = joinId.trim();
+  const joinValid = /^\d+$/.test(trimmed) && BigInt(trimmed) >= 0n;
 
-  async function onCreate() {
-    // 仅 demo 构建可走此流程(需本地链 + 账户 + deployment)。按钮已被 isConnected 门控,
-    // 这里再显式早退一道,把「非 demo 不可用」写成代码意图而非隐含依赖按钮 disabled。
-    if (!IS_DEMO) return;
-    if (!address || !publicClient) {
-      setFlow({ phase: 'error', message: '尚未连接账户或链客户端未就绪。' });
-      return;
-    }
-    try {
-      // 1. 部署信息:首取走缓存;若曾失败(demo 后启)则 reload 重取一次(契约:rejected promise 被缓存)。
-      let deployment: Deployment;
-      try {
-        deployment = await loadDeployment();
-      } catch {
-        deployment = await reloadDeployment();
-      }
-
-      // 2. 固定布阵 + 全新 salt(§5.1:每局必须新 salt);承诺本地算(= 证明的 pubSignal[0])。
-      const salt = randomSalt();
-      const commitment = computeCommitment(FIXED_BOARD, salt);
-
-      // 3. 先落 pending(§8:棋盘即资产,上链前先存;gameId 未知)。写失败抛 StorageWriteError。
-      //
-      // ⚠️ 交接给 3.4(真 create + join):pending 键 = (chainId, contract, address),**不含 gameId**
-      //    (见 storage.ts pendingKey)。故同一账户在同一合约上只有「一个」pending 槽——后写覆盖先写
-      //    (last-writer-wins)。当前只有 create 一条路、且串行,无冲突;但 3.4 让一个账户既能 create
-      //    又能 join(甚至并发多局未决)时,create 的待定布阵与 join 的待定布阵会争这同一个槽,互相覆盖。
-      //    3.4 必须决定:create / join 是否各用一个独立 pending 键(如键里加 'create'/'join' 或局标识)。
-      //    另:promotePending 只是「盲取当前 pending 迁到 gameId」——它无条件信任此刻 pending 槽里的就是
-      //    本次交易对应的布阵;一旦上面的槽被并发流程串改,promote 会把错的布阵迁到正式键。一并在 3.4 收口。
-      savePending(deployment.chainId, deployment.battleship, address, {
-        ships: FIXED_BOARD,
-        salt,
-        commitment,
-      });
-
-      // 4. worker 出 board 证明(本地计算 → calldata 已在 worker 内 formatProofCalldata 好)。
-      setFlow({ phase: 'proving' });
-      const { calldata } = await prove('board', toBoardInputs(FIXED_BOARD, salt));
-
-      // 5. writeContract createGame(commitment, BoardProof)。local-account connector 本地签名发 raw tx。
-      setFlow({ phase: 'sending' });
-      const hash = await writeContractAsync({
-        abi: battleshipAbi,
-        address: deployment.battleship,
-        functionName: 'createGame',
-        args: [commitment, toBoardProofArg(calldata)],
-      });
-
-      // 6. 等回执。
-      setFlow({ phase: 'confirming', hash });
-      const receipt = await publicClient.waitForTransactionReceipt({ hash });
-
-      // 7. 从回执日志解析 GameCreated → gameId(indexed)。
-      const logs = parseEventLogs({
-        abi: battleshipAbi,
-        eventName: 'GameCreated',
-        logs: receipt.logs,
-      });
-      const ev = logs[0];
-      if (!ev) {
-        throw new Error('交易已上链但未解析到 GameCreated 事件。');
-      }
-      const gameId = ev.args.gameId;
-      const p0 = ev.args.p0;
-
-      // 8. pending → 正式键(拿到 gameId 后迁移)。
-      promotePending(deployment.chainId, deployment.battleship, address, gameId);
-
-      setFlow({ phase: 'done', hash, gameId, p0 });
-    } catch (err) {
-      setFlow({ phase: 'error', message: mapContractError(err) });
-    }
+  function onJoin() {
+    if (!joinValid) return;
+    navigate(`/game/${trimmed}`);
   }
 
   return (
-    <section className="space-y-6">
-      <h1 className="font-display text-3xl font-bold text-phosphor">LOBBY</h1>
-      <p className="text-foam">
-        三幕(布阵 / 对战 / 结算)在 3.4+ 落地。本页当前承载 Task 3.3 的链上 createGame 全栈验收。
-      </p>
+    <section className="space-y-8">
+      {/* ── 标题 + 当前账户 ── */}
+      <div className="flex items-end justify-between">
+        <div className="space-y-1">
+          <h1 className="font-display text-3xl font-bold text-phosphor">作战大厅</h1>
+          <p className="text-sm text-mist">创建一局,或用编号加入对手的对局。</p>
+        </div>
+        <span className="font-mono text-xs text-mist">
+          {isConnected && address ? `当前账户 ${shortAddr(address)}` : '未连接账户'}
+        </span>
+      </div>
 
-      <div className="space-y-4 border border-grid bg-console p-5">
-        <div className="flex items-center justify-between">
-          <h2 className="font-display text-lg font-bold text-foam">创建对局(验收)</h2>
-          <span className="font-mono text-xs text-mist">
-            {isConnected ? `账户 ${address?.slice(0, 6)}…${address?.slice(-4)}` : '未连接账户'}
-          </span>
+      {/* ── 创建 / 加入 两入口 ── */}
+      <div className="grid gap-4 md:grid-cols-2">
+        {/* 创建对局 → /game/new */}
+        <div className="flex flex-col justify-between gap-4 border border-grid bg-console p-5">
+          <div className="space-y-1">
+            <h2 className="font-display text-lg font-bold text-foam">创建对局</h2>
+            <p className="text-sm text-mist">部署你的舰队、锁定开局,生成可分享的对局编号。</p>
+          </div>
+          <button
+            type="button"
+            data-testid="create-game"
+            onClick={() => navigate('/game/new')}
+            className="self-start border border-phosphor bg-grid px-4 py-2 font-display text-sm font-bold text-phosphor hover:bg-grid/80"
+          >
+            创建对局
+          </button>
         </div>
 
-        <button
-          type="button"
-          data-testid="create-game"
-          onClick={() => void onCreate()}
-          disabled={busy || !isConnected}
-          className="border border-phosphor bg-grid px-4 py-2 font-display text-sm font-bold text-phosphor hover:bg-grid disabled:opacity-50"
-        >
-          {busy ? '处理中…' : 'createGame(固定布阵)'}
-        </button>
+        {/* 加入对局:gameId 输入 + 加入 */}
+        <div className="flex flex-col justify-between gap-4 border border-grid bg-console p-5">
+          <div className="space-y-1">
+            <h2 className="font-display text-lg font-bold text-foam">加入对局</h2>
+            <p className="text-sm text-mist">输入对手给你的对局编号。</p>
+          </div>
+          <form
+            className="flex items-center gap-2"
+            onSubmit={(e) => {
+              e.preventDefault();
+              onJoin();
+            }}
+          >
+            <input
+              type="text"
+              inputMode="numeric"
+              data-testid="join-input"
+              value={joinId}
+              onChange={(e) => setJoinId(e.target.value.replace(/[^\d]/g, ''))}
+              placeholder="对局编号"
+              aria-label="对局编号"
+              className="w-32 border border-grid bg-abyss px-3 py-2 font-mono text-sm text-phosphor placeholder:text-mist focus:border-phosphor focus:outline-none"
+            />
+            <button
+              type="submit"
+              data-testid="join-game"
+              disabled={!joinValid}
+              className="border border-phosphor bg-grid px-4 py-2 font-display text-sm font-bold text-phosphor hover:bg-grid/80 disabled:opacity-50"
+            >
+              加入
+            </button>
+          </form>
+        </div>
+      </div>
 
-        {/* 证明进度(proving 期间):worker 本地计算阶段 */}
-        {flow.phase === 'proving' && (
-          <p className="font-mono text-xs text-phosphor" data-testid="flow-status">
-            生成 board 证明中…
-            {progress ? ` · ${progress.stage}` : ''}
-            {progress?.loaded != null && progress.total != null
-              ? ` (${(progress.loaded / 1e6).toFixed(1)}/${(progress.total / 1e6).toFixed(1)}MB)`
-              : ''}
+      {/* ── 进行中对局列表 ── */}
+      <div className="space-y-3">
+        <h2 className="font-display text-lg font-bold text-foam">进行中的对局</h2>
+
+        {loading && (
+          <p className="font-mono text-xs text-mist" data-testid="list-loading">
+            正在回放对局事件…
           </p>
         )}
-        {flow.phase === 'sending' && (
-          <p className="font-mono text-xs text-phosphor" data-testid="flow-status">
-            提交交易中(本地签名 → eth_sendRawTransaction)…
+
+        {error && !loading && (
+          <p className="font-mono text-xs text-flare" data-testid="list-error">
+            {error}
           </p>
         )}
-        {flow.phase === 'confirming' && (
-          <p className="font-mono text-xs text-phosphor" data-testid="flow-status">
-            等待回执 · tx {flow.hash.slice(0, 10)}…
-          </p>
-        )}
-        {flow.phase === 'done' && (
-          <div className="space-y-1 border border-phosphor/40 bg-abyss p-3" data-testid="flow-done">
-            <p className="font-mono text-xs text-phosphor">✓ GameCreated</p>
-            <p className="font-mono text-xs text-foam">gameId: {flow.gameId.toString()}</p>
-            <p className="font-mono text-xs text-foam">p0: {flow.p0}</p>
-            <p className="font-mono text-xs text-mist break-all">tx: {flow.hash}</p>
+
+        {!loading && games.length === 0 && (
+          // 空状态给行动指引(§7.6:不给装饰性感叹)。
+          <div
+            className="border border-dashed border-grid bg-console/50 px-4 py-6 text-center"
+            data-testid="list-empty"
+          >
+            <p className="text-sm text-mist">
+              还没有进行中的对局。创建一局,把编号发给对手。
+            </p>
           </div>
         )}
-        {flow.phase === 'error' && (
-          <p className="font-mono text-xs text-flare" data-testid="flow-error">
-            ✗ {flow.message}
-          </p>
-        )}
 
-        {!IS_DEMO && (
-          <p className="font-mono text-xs text-mist">
-            (非 demo 构建:需先 pnpm demo 启动本地链与账户)
-          </p>
+        {games.length > 0 && (
+          <ul className="space-y-2" data-testid="game-list">
+            {games.map((g) => (
+              <li key={g.gameId.toString()}>
+                <button
+                  type="button"
+                  data-testid={`game-row-${g.gameId.toString()}`}
+                  onClick={() => navigate(`/game/${g.gameId.toString()}`)}
+                  className="flex w-full items-center justify-between border border-grid bg-console px-4 py-3 text-left hover:border-phosphor"
+                >
+                  <span className="flex items-center gap-3">
+                    <span className="font-mono text-sm font-bold text-phosphor">
+                      #{g.gameId.toString()}
+                    </span>
+                    <StatusChip status={g.status} />
+                  </span>
+                  <span className="flex items-center gap-2 font-mono text-xs text-mist">
+                    <span>P0 {g.p0 ? shortAddr(g.p0) : '—'}</span>
+                    <span className="text-grid">·</span>
+                    <span>P1 {g.p1 ? shortAddr(g.p1) : '待加入'}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
         )}
       </div>
     </section>
+  );
+}
+
+/** 状态 chip:waiting=磷光(可加入),active=foam(进行中)。直角细边(§7.2)。 */
+function StatusChip({ status }: { status: GameRow['status'] }) {
+  const cls =
+    status === 'waiting'
+      ? 'border-phosphor/60 text-phosphor'
+      : 'border-grid text-foam';
+  return (
+    <span className={`border px-2 py-0.5 font-mono text-[11px] ${cls}`}>
+      {statusLabel(status)}
+    </span>
   );
 }
