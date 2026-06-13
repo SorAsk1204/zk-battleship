@@ -63,6 +63,15 @@ export type GameSnapshot = {
   pendingY: number;
   /** hits[i] = 玩家 i 被命中数(到 17 即败)。 */
   hits: readonly [number, number];
+  /**
+   * shotMap[i] = 位图:玩家 i 的棋盘被打过哪些格(bit = y*10+x;合约 Game.shotMap)。
+   * 语义(合约 D11,respond 成功时才置位):shotMap[i] 标的是「打在 i 棋盘上」的格子,
+   * 故「我对敌开过炮的格」= shotMap[对手索引],「敌对我开过炮的格」= shotMap[我索引]。
+   * 合约维持不变量「shotMap 置位数 == ShotResolved 事件数」(置位与 ShotResolved 同在 respond 发生),
+   * 故 shotMap 派生的 firedCells 与 ShotResolved 回放出的 shots 覆盖同一批格(无谁领先谁的窗口;
+   * 唯一领先两者的是 pendingShot——已 attack 未 respond 的 pending 格尚不在 shotMap/事件里,见 deriveGameView)。
+   */
+  shotMap: readonly [bigint, bigint];
   /** address(0) 表未决出;Finished/Cancelled 后为胜者(cancelled 为 zero)。 */
   winner: Address;
   /** 超时计时锚点(秒,链上 block.timestamp)。 */
@@ -142,6 +151,24 @@ export type GameView = {
    */
   enemyShots: ShotMark[];
   /**
+   * 我对敌开过炮的格集合(链上 shotMap[对手索引] 展开,bit=y*10+x → 格序号)。observer/null 时为空集。
+   * 用途(3.7 SonarBoard,§7.3):
+   *   (a) isCellDisabled 判定 = `myFiredCells.has(y*10+x)`——已开炮的格不可再点(O(1) 查,
+   *       比从 myShots 数组 O(n) 扫每格更直;且 shotMap 正是合约 REPEAT 守卫读的同一位图,是该判定的链上权威源)。
+   *   (b) §7.3 REPEAT 前端预检:开炮前先 `myFiredCells.has(bit)`,命中即拦,省一次必 revert 的 attack 往返
+   *       (合约 attack 的 REPEAT require 读的就是 shotMap[defender])。
+   * 注:myFiredCells 与 myShots 覆盖同一批格(合约不变量 shotMap==ShotResolved,见 GameSnapshot.shotMap)。
+   * 唯一差异在另一向:**pending 格**(我已 attack、对手未 respond)既不在 shotMap 也不在 myShots——
+   * 若 SonarBoard 要连「在飞的 pending 格」也禁点,需在 myFiredCells 之外并上 pendingShot 坐标
+   * (phase===AwaitingResponse 且我是 attacker 时,view.pendingShot 给出该坐标)。
+   */
+  myFiredCells: Set<number>;
+  /**
+   * 敌对我开过炮的格集合(链上 shotMap[我索引] 展开)。observer/null 时为空集。
+   * 对称于 myFiredCells;3.7 己方海域可据此标「对手已探明的格」(与 enemyShots 同批,Set 形态便于 O(1) 命中查)。
+   */
+  enemyFiredCells: Set<number>;
+  /**
    * 双方被命中数 [p0BeingHit, p1BeingHit](= snapshot.hits,原样透出;17 即败)。
    * 注意语义:hits[i] 是「玩家 i **被**命中」数,不是「玩家 i 打中对手」数。
    */
@@ -149,6 +176,14 @@ export type GameView = {
   /** 我被命中数 / 对手被命中数(从 hits 按 myIdx 取;observer/null 时 undefined)。 */
   myHits: number | undefined;
   opponentHits: number | undefined;
+  /**
+   * 我的链上承诺(myIdx===0→commitment0,===1→commitment1;observer/null→undefined)。
+   * 3.7 useAutoRespond 据此校验 storage 还原的棋盘+salt 是否对得上链上承诺
+   * (verifyBoardCommitment(ships, salt, myCommitment));防用错局/错棋盘的存档去应答。
+   */
+  myCommitment: bigint | undefined;
+  /** 对手链上承诺(myIdx===0→commitment1,===1→commitment0;observer/null→undefined)。对称暴露,3.7 备用。 */
+  opponentCommitment: bigint | undefined;
   /** 待应答炮击(仅 AwaitingResponse;否则 null)。 */
   pendingShot: PendingShot | null;
   /**
@@ -227,7 +262,8 @@ export function deriveGameView(
   shots: readonly ResolvedShot[],
   connectedAddress: Address | undefined,
 ): GameView {
-  const { p0, p1, phase, turn, pendingX, pendingY, hits, winner, lastActionAt } = snapshot;
+  const { p0, p1, commitment0, commitment1, phase, turn, pendingX, pendingY, hits, shotMap, winner, lastActionAt } =
+    snapshot;
 
   const act = phaseToAct(phase);
   const myIdx = computeMyIdx(connectedAddress, p0, p1);
@@ -250,6 +286,10 @@ export function deriveGameView(
   // defender===对手 → 我打敌人(myShots,敌方声呐屏)。observer/null 时两者皆空(无「我方」立场)。
   const myShots: ShotMark[] = [];
   const enemyShots: ShotMark[] = [];
+  // 已开炮位图 → 格集合(链上 shotMap;见类型注释:shotMap[对手]=我开过炮的格,shotMap[我]=敌开过炮的格)。
+  // observer/null 无「我方」立场,两集合皆空(SonarBoard 不会在旁观态拿它做禁点)。
+  let myFiredCells = new Set<number>();
+  let enemyFiredCells = new Set<number>();
   if (isPlayer) {
     const me = myIdx as 0 | 1;
     const foe = (1 - me) as 0 | 1;
@@ -258,10 +298,16 @@ export function deriveGameView(
       if (s.defender === foe) myShots.push(mark);
       else if (s.defender === me) enemyShots.push(mark);
     }
+    myFiredCells = expandShotMap(shotMap[foe]);
+    enemyFiredCells = expandShotMap(shotMap[me]);
   }
 
   const myHits = isPlayer ? hits[myIdx as 0 | 1] : undefined;
   const opponentHits = isPlayer ? hits[(1 - (myIdx as 0 | 1)) as 0 | 1] : undefined;
+  // 承诺按视角取:myIdx 0→commitment0、1→commitment1;observer/null→undefined(无「我的承诺」)。
+  const commitments: readonly [bigint, bigint] = [commitment0, commitment1];
+  const myCommitment = isPlayer ? commitments[myIdx as 0 | 1] : undefined;
+  const opponentCommitment = isPlayer ? commitments[(1 - (myIdx as 0 | 1)) as 0 | 1] : undefined;
 
   // 待应答炮击(仅 AwaitingResponse):attacker=turn,defender=1-turn。
   let pendingShot: PendingShot | null = null;
@@ -292,9 +338,13 @@ export function deriveGameView(
     obligatedIdx,
     myShots,
     enemyShots,
+    myFiredCells,
+    enemyFiredCells,
     hits,
     myHits,
     opponentHits,
+    myCommitment,
+    opponentCommitment,
     pendingShot,
     pendingShotIsForMe,
     winner: winnerOut,
@@ -302,6 +352,20 @@ export function deriveGameView(
     isCancelled,
     lastActionAt,
   };
+}
+
+/**
+ * shotMap 位图(bigint)→ 已置位的格序号集合(bit i 置位 → i ∈ 结果,i = y*10+x,范围 0..99)。
+ * 纯函数,只扫 100 位(棋盘 10×10 恒 100 格);高于 99 的位理论不会被合约置位(坐标 require x<10&&y<10),
+ * 故只扫 0..99 即覆盖全部合法格,越界脏位被忽略(不会污染禁点判定)。
+ * 用 BigInt 移位逐位取(>> BigInt(i) & 1n);Set 便于 SonarBoard O(1) 命中查(has(y*10+x))。
+ */
+export function expandShotMap(bitmap: bigint): Set<number> {
+  const cells = new Set<number>();
+  for (let i = 0; i < 100; i++) {
+    if (((bitmap >> BigInt(i)) & 1n) === 1n) cells.add(i);
+  }
+  return cells;
 }
 
 /**

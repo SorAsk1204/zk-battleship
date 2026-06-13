@@ -14,6 +14,8 @@ import { describe, expect, it } from 'vitest';
 import type { Address } from '../lib/contracts.ts';
 import { Phase } from './gameView.ts';
 import {
+  applyBlockTimes,
+  collectUntimedBlocks,
   comparePos,
   projectSnapshot,
   toLogEntry,
@@ -25,6 +27,11 @@ import {
 const P0 = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266' as Address;
 const P1 = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as Address;
 const ZERO = '0x0000000000000000000000000000000000000000' as Address;
+
+/** shotMap 位图小工具:把若干格序号(y*10+x)置位成一个 bigint。 */
+function bits(...cells: number[]): bigint {
+  return cells.reduce((acc, c) => acc | (1n << BigInt(c)), 0n);
+}
 
 /** 造一个 getGame 返回的 struct(viem 命名对象形态)。 */
 function struct(overrides: Partial<GetGameResult> = {}): GetGameResult {
@@ -86,6 +93,23 @@ describe('projectSnapshot — getGame struct → GameSnapshot', () => {
 
   it('turn 异常值(非 0/1)收窄为 0', () => {
     expect(projectSnapshot(struct({ turn: 7 })).turn).toBe(0);
+  });
+
+  it('shotMap 投影为两个 bigint(原样保精度;派生层据此给 firedCells)', () => {
+    const s = projectSnapshot(struct({ shotMap: [bits(12), bits(34, 56)] }));
+    expect(s.shotMap[0]).toBe(bits(12));
+    expect(s.shotMap[1]).toBe(bits(34, 56));
+    expect(typeof s.shotMap[0]).toBe('bigint');
+  });
+
+  it('shotMap 大位图(bit 99 置位)不丢精度', () => {
+    const s = projectSnapshot(struct({ shotMap: [1n << 99n, 0n] }));
+    expect(s.shotMap[0]).toBe(1n << 99n);
+  });
+
+  it('shotMap 空(双 0n)→ 投影双 0n', () => {
+    const s = projectSnapshot(struct({ shotMap: [0n, 0n] }));
+    expect(s.shotMap).toEqual([0n, 0n]);
   });
 });
 
@@ -174,5 +198,74 @@ describe('comparePos — 日志按 (blockNumber, logIndex) 升序', () => {
     const big = 9_007_199_254_740_993n; // MAX_SAFE_INTEGER + 2
     const arr = [mk(big + 1n, 0), mk(big, 0)].sort(comparePos);
     expect(arr.map((e) => e.pos.blockNumber)).toEqual([big, big + 1n]);
+  });
+});
+
+describe('collectUntimedBlocks — 块时间 memo 纯核(挑出需 getBlock 的去重块号)', () => {
+  /** 造若干条目,块号取自入参(logIndex 递增,内容无关紧要)。 */
+  const entries = (...blockNumbers: bigint[]): GameLogEntry[] =>
+    blockNumbers.map((bn, i) => ({ kind: 'fired', pos: { blockNumber: bn, logIndex: i } }));
+
+  it('全新块、无缓存无在取 → 全部去重返回(升序)', () => {
+    const need = collectUntimedBlocks(entries(7n, 3n, 5n), new Set(), new Set());
+    expect(need).toEqual([3n, 5n, 7n]);
+  });
+
+  it('同块多条事件 → 去重为一个块号(33 事件对每个唯一块只发一次 getBlock)', () => {
+    const need = collectUntimedBlocks(entries(5n, 5n, 5n), new Set(), new Set());
+    expect(need).toEqual([5n]);
+  });
+
+  it('已缓存的块跳过(timed.has 命中即不再取)', () => {
+    // 用 Map 当 timed(实际传 blockTimeRef Map):块 5 已缓存 → 只剩块 7 待取。
+    const timed = new Map<bigint, number>([[5n, 1_700_000_000]]);
+    const need = collectUntimedBlocks(entries(5n, 7n), timed, new Set());
+    expect(need).toEqual([7n]);
+  });
+
+  it('正在取的块跳过(inFlight 防并发重取)', () => {
+    const need = collectUntimedBlocks(entries(5n, 7n), new Set(), new Set([7n]));
+    expect(need).toEqual([5n]);
+  });
+
+  it('既缓存又在取 → 都跳过,空数组(无需再发 getBlock)', () => {
+    const timed = new Map<bigint, number>([[5n, 1]]);
+    const need = collectUntimedBlocks(entries(5n, 7n), timed, new Set([7n]));
+    expect(need).toEqual([]);
+  });
+
+  it('空条目 → 空数组', () => {
+    expect(collectUntimedBlocks([], new Set(), new Set())).toEqual([]);
+  });
+});
+
+describe('applyBlockTimes — 块时间 memo 纯核(把已知块时间贴到条目 ts,读时套用不 mutate)', () => {
+  const e = (bn: bigint, logIndex = 0): GameLogEntry => ({ kind: 'fired', pos: { blockNumber: bn, logIndex } });
+
+  it('块号在 timeMap → 写 ts(unix 秒)', () => {
+    const out = applyBlockTimes([e(5n)], new Map([[5n, 1_700_000_123]]));
+    expect(out[0].ts).toBe(1_700_000_123);
+  });
+
+  it('块号不在 timeMap(未取到/失败)→ ts 缺省(条目仍返回,渲染层降级不显时间)', () => {
+    const out = applyBlockTimes([e(9n)], new Map([[5n, 1]]));
+    expect(out[0].ts).toBeUndefined();
+    expect(out.length).toBe(1); // 条目不丢
+  });
+
+  it('混合:部分块有时间、部分没有 → 各按自身块号套用', () => {
+    const out = applyBlockTimes([e(5n, 0), e(9n, 1)], new Map([[5n, 1_700_000_000]]));
+    expect(out[0].ts).toBe(1_700_000_000);
+    expect(out[1].ts).toBeUndefined();
+  });
+
+  it('不 mutate 入参条目(池内条目恒为无 ts 的原始投影,ts 只在输出层附加)', () => {
+    const src = e(5n);
+    applyBlockTimes([src], new Map([[5n, 1_700_000_000]]));
+    expect(src.ts).toBeUndefined(); // 原对象未被改
+  });
+
+  it('空条目 → 空数组', () => {
+    expect(applyBlockTimes([], new Map())).toEqual([]);
   });
 });

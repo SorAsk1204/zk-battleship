@@ -20,6 +20,7 @@ import {
   type ResolvedShot,
   deriveGameView,
   computeMyIdx,
+  expandShotMap,
   phaseToAct,
 } from './gameView.ts';
 
@@ -28,7 +29,7 @@ const P1 = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as Address;
 const STRANGER = '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC' as Address;
 const ZERO = '0x0000000000000000000000000000000000000000' as Address;
 
-/** 造快照;默认一局已开战、P0 先攻、各 0 命中。覆盖字段经 overrides 传入。 */
+/** 造快照;默认一局已开战、P0 先攻、各 0 命中、双方 shotMap 空。覆盖字段经 overrides 传入。 */
 function snap(overrides: Partial<GameSnapshot> = {}): GameSnapshot {
   return {
     p0: P0,
@@ -40,10 +41,16 @@ function snap(overrides: Partial<GameSnapshot> = {}): GameSnapshot {
     pendingX: 0,
     pendingY: 0,
     hits: [0, 0],
+    shotMap: [0n, 0n],
     winner: ZERO,
     lastActionAt: 1_700_000_000,
     ...overrides,
   };
+}
+
+/** shotMap 位图小工具:把若干格序号(y*10+x)置位成一个 bigint(造 shotMap 测试输入)。 */
+function bits(...cells: number[]): bigint {
+  return cells.reduce((acc, c) => acc | (1n << BigInt(c)), 0n);
 }
 
 /** ShotResolved 回放项简写。 */
@@ -169,6 +176,140 @@ describe('deriveGameView — myShots / enemyShots 分组(按 defender)', () => {
       { x: 5, y: 5, result: 1, coord: 'F-6' },
       { x: 6, y: 6, result: 0, coord: 'G-7' },
     ]);
+  });
+});
+
+describe('expandShotMap — 位图 bigint → 格序号集合(bit i ↔ 格 i = y*10+x)', () => {
+  it('空位图 → 空集', () => {
+    expect(expandShotMap(0n).size).toBe(0);
+  });
+  it('单 bit:bit 0(格 0,即 A-1)', () => {
+    const s = expandShotMap(bits(0));
+    expect([...s]).toEqual([0]);
+    expect(s.has(0)).toBe(true);
+  });
+  it('单 bit:bit 99(格 99,即 J-10,最高合法格)', () => {
+    const s = expandShotMap(1n << 99n);
+    expect([...s]).toEqual([99]);
+    expect(s.has(99)).toBe(true);
+  });
+  it('多 bit:0/45/99 同时置位', () => {
+    const s = expandShotMap(bits(0, 45, 99));
+    expect(s.has(0)).toBe(true);
+    expect(s.has(45)).toBe(true);
+    expect(s.has(99)).toBe(true);
+    expect(s.size).toBe(3);
+  });
+  it('近满(0..98 置位,99 未置)→ 99 格、不含 99', () => {
+    let bm = 0n;
+    for (let i = 0; i < 99; i++) bm |= 1n << BigInt(i);
+    const s = expandShotMap(bm);
+    expect(s.size).toBe(99);
+    expect(s.has(98)).toBe(true);
+    expect(s.has(99)).toBe(false);
+  });
+  it('只扫 0..99:高于 99 的脏位被忽略(不污染禁点判定)', () => {
+    // bit 100 + bit 5 置位:只认 5,忽略 100(棋盘恒 100 格,坐标 require x<10&&y<10 保证合约不会置 ≥100 的位)。
+    const s = expandShotMap((1n << 100n) | bits(5));
+    expect([...s]).toEqual([5]);
+    expect(s.has(100)).toBe(false);
+  });
+});
+
+describe('deriveGameView — myFiredCells / enemyFiredCells(链上 shotMap 派生,3.7 禁点 + REPEAT 预检)', () => {
+  // 约定(合约 D11):shotMap[i] = 打在 i 棋盘上的格。故 myFiredCells = shotMap[对手],enemyFiredCells = shotMap[我]。
+  // 造:shotMap[0] 含格 12(打在 P0 上),shotMap[1] 含格 34 与 56(打在 P1 上)。
+  const s = snap({ shotMap: [bits(12), bits(34, 56)] });
+
+  it('P0 视角:myFiredCells=shotMap[1](我打 P1:34/56),enemyFiredCells=shotMap[0](P1 打我:12)', () => {
+    const v = deriveGameView(s, [], P0);
+    expect([...v.myFiredCells].sort((a, b) => a - b)).toEqual([34, 56]);
+    expect([...v.enemyFiredCells]).toEqual([12]);
+    expect(v.myFiredCells.has(34)).toBe(true);
+    expect(v.myFiredCells.has(12)).toBe(false);
+  });
+
+  it('P1 视角:同一份 shotMap,my/enemy 互换(account-switch 视角翻转)', () => {
+    const v = deriveGameView(s, [], P1);
+    expect([...v.myFiredCells]).toEqual([12]); // P1 打 P0 = shotMap[0]
+    expect([...v.enemyFiredCells].sort((a, b) => a - b)).toEqual([34, 56]); // P0 打 P1 = shotMap[1]
+  });
+
+  it('observer:无「我方」立场,两集合皆空', () => {
+    const v = deriveGameView(s, [], STRANGER);
+    expect(v.myFiredCells.size).toBe(0);
+    expect(v.enemyFiredCells.size).toBe(0);
+  });
+
+  it('未连接(null):两集合皆空', () => {
+    const v = deriveGameView(s, [], undefined);
+    expect(v.myFiredCells.size).toBe(0);
+    expect(v.enemyFiredCells.size).toBe(0);
+  });
+
+  it('myFiredCells = SonarBoard 禁点判定源:has(y*10+x) 即该格已开炮', () => {
+    // P0 已打 P1 的格 34(x=4,y=3)与 56(x=6,y=5):这两格禁点,其余可点。
+    const v = deriveGameView(snap({ shotMap: [0n, bits(3 * 10 + 4, 5 * 10 + 6)] }), [], P0);
+    expect(v.myFiredCells.has(3 * 10 + 4)).toBe(true);
+    expect(v.myFiredCells.has(5 * 10 + 6)).toBe(true);
+    expect(v.myFiredCells.has(0)).toBe(false);
+  });
+
+  it('pending 窗口:已 attack 未 respond 的格不在 shotMap、也不在 myShots(合约置位在 respond);' +
+     'shotMap 与 ShotResolved 同批,唯一领先两者的是 pendingShot', () => {
+    // AwaitingResponse:P0 已 attack 格 77 但 P1 未 respond → shotMap 仍空、无 ShotResolved。
+    // 故 myFiredCells 不含 77(它在 view.pendingShot 里);若 3.7 要禁掉在飞的 pending 格,需并上 pendingShot 坐标。
+    const v = deriveGameView(
+      snap({ phase: Phase.AwaitingResponse, turn: 0, pendingX: 7, pendingY: 7, shotMap: [0n, 0n] }),
+      [],
+      P0,
+    );
+    expect(v.myFiredCells.size).toBe(0); // shotMap 未置位(respond 才置)
+    expect(v.myShots.length).toBe(0); // 无 ShotResolved
+    expect(v.pendingShot).toEqual({ x: 7, y: 7, coord: 'H-8', attacker: 0, defender: 1 }); // pending 格在这
+    // 一旦 respond:contract 同时置 shotMap[1] 的 bit 77 并发 ShotResolved → 两者一起出现(此处只断言 pending 态)。
+  });
+
+  it('shotMap 与 ShotResolved 覆盖同一批格(已 respond 的格:两处都有)', () => {
+    // P0 打 P1 格 25(x=5,y=2)已应答:shotMap[1] 置位 25 且有一条 defender=1 的 ShotResolved。
+    const v = deriveGameView(snap({ shotMap: [0n, bits(2 * 10 + 5)] }), [shot(1, 5, 2, 1)], P0);
+    expect(v.myFiredCells.has(2 * 10 + 5)).toBe(true);
+    expect(v.myShots.map((m) => m.coord)).toEqual(['F-3']);
+  });
+});
+
+describe('deriveGameView — myCommitment / opponentCommitment(3.7 useAutoRespond 校验存档承诺)', () => {
+  const s = snap({ commitment0: 0xaaan, commitment1: 0xbbbn });
+
+  it('P0 视角:myCommitment=commitment0,opponentCommitment=commitment1', () => {
+    const v = deriveGameView(s, [], P0);
+    expect(v.myCommitment).toBe(0xaaan);
+    expect(v.opponentCommitment).toBe(0xbbbn);
+  });
+
+  it('P1 视角:myCommitment=commitment1,opponentCommitment=commitment0(翻转)', () => {
+    const v = deriveGameView(s, [], P1);
+    expect(v.myCommitment).toBe(0xbbbn);
+    expect(v.opponentCommitment).toBe(0xaaan);
+  });
+
+  it('observer:两者皆 undefined(无「我的承诺」)', () => {
+    const v = deriveGameView(s, [], STRANGER);
+    expect(v.myCommitment).toBeUndefined();
+    expect(v.opponentCommitment).toBeUndefined();
+  });
+
+  it('未连接(null):两者皆 undefined', () => {
+    const v = deriveGameView(s, [], undefined);
+    expect(v.myCommitment).toBeUndefined();
+    expect(v.opponentCommitment).toBeUndefined();
+  });
+
+  it('承诺保持 bigint(供 verifyBoardCommitment 比对,不丢精度)', () => {
+    const big = 12345678901234567890123456789012345678901234567890n;
+    const v = deriveGameView(snap({ commitment0: big }), [], P0);
+    expect(v.myCommitment).toBe(big);
+    expect(typeof v.myCommitment).toBe('bigint');
   });
 });
 

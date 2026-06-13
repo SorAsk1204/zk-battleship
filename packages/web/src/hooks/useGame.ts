@@ -65,6 +65,13 @@ export type GameLogEntry = {
   kind: 'joined' | 'fired' | 'resolved' | 'finished';
   /** 链上块号:块内序(唯一定位 + 排序键)。 */
   pos: { blockNumber: bigint; logIndex: number };
+  /**
+   * 该事件所在块的墙钟时间(unix 秒,= block.timestamp)。§7.3 战报流渲染 `▸ HH:MM:SS …`(format.formatLogTime)。
+   * 块号 ≠ 墙钟,故必须查块取时间;按块号 memo(同块只查一次)。回填历史与 live 事件统一据此取真实墙钟
+   * (用 Date.now() 入池对回填是错的——那是「读到的时刻」不是「上链时刻」)。getBlock 失败时本字段缺省
+   * (undefined):条目仍按 pos 出现,渲染层只是不显示 HH:MM:SS(降级而非丢事件)。
+   */
+  ts?: number;
   /** 攻击/防守方索引(fired=attacker,resolved=defender)。 */
   side?: 0 | 1;
   x?: number;
@@ -181,10 +188,52 @@ export function toPhase(raw: number): PhaseValue {
   return raw >= Phase.None && raw <= Phase.Cancelled ? (raw as PhaseValue) : Phase.None;
 }
 
+/** 只需「块号是否在内」的最小结构(Set 与 Map 都满足:两者的 has(bigint) 同签名)——避免 enrich 每趟新建 Set。 */
+type HasBlock = { has(bn: bigint): boolean };
+
+/**
+ * 块时间 memo 的纯核(可单测)——从一批条目里挑出「还没缓存块时间、也不在取数中」的去重块号。
+ * 这是「同块只查一次 getBlock」省流的判定:已缓存(timed.has)或正在取(inFlight.has)的块都跳过,
+ * 故 33 事件全程对每个**唯一块**只发一次 getBlock(回填一把 + 每条 live 事件 1 块)。
+ *
+ * @param entries 当前事件池里的条目
+ * @param timed   已缓存块时间的块号(传 blockTimeRef Map 即可——只用其 has;Map.has(blockNumber) 命中即已缓存)
+ * @param inFlight 正在 getBlock 中的块号集合(防并发重取)
+ * @returns 需要发起 getBlock 的去重块号(升序,稳定便于测试)
+ */
+export function collectUntimedBlocks(
+  entries: Iterable<GameLogEntry>,
+  timed: HasBlock,
+  inFlight: HasBlock,
+): bigint[] {
+  const need = new Set<bigint>();
+  for (const e of entries) {
+    const bn = e.pos.blockNumber;
+    if (!timed.has(bn) && !inFlight.has(bn)) need.add(bn);
+  }
+  return [...need].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * 块时间 memo 的纯核(可单测)——把已知块时间贴到条目上(读时套用,不改池内条目)。
+ * 块号在 timeMap 里 → 写 ts;不在(getBlock 未完成 / 失败)→ ts 缺省(条目仍返回,渲染层降级不显时间)。
+ * 返回新对象数组(不 mutate 入参条目),故池内条目恒为「无 ts 的原始投影」,ts 只在输出层附加。
+ */
+export function applyBlockTimes(
+  entries: readonly GameLogEntry[],
+  timeMap: ReadonlyMap<bigint, number>,
+): GameLogEntry[] {
+  return entries.map((e) => {
+    const ts = timeMap.get(e.pos.blockNumber);
+    return ts === undefined ? e : { ...e, ts };
+  });
+}
+
 /**
  * getGame 解码出的 struct(viem 对命名 tuple 给对象;字段名与 ABI components 同名)→ GameSnapshot。
- * uint8→number、地址原样(0x 串)、uint256 承诺保持 bigint、turn 收窄 0/1。
- * 注:struct 含 shotMap[2](位图)本派生用不到(坐标级 hit/miss 走 ShotResolved 事件),不投影。
+ * uint8→number、地址原样(0x 串)、uint256 承诺/shotMap 保持 bigint、turn 收窄 0/1。
+ * shotMap[2](位图,uint256[2])原样保 bigint 透出:派生层据此给「已开炮格集合」(3.7 SonarBoard 禁点
+ * + §7.3 REPEAT 前端预检)。坐标级 hit/miss 仍走 ShotResolved 事件(位图只标「打过」不标哪格 hit)。
  */
 export function projectSnapshot(g: GetGameResult): GameSnapshot {
   return {
@@ -197,6 +246,7 @@ export function projectSnapshot(g: GetGameResult): GameSnapshot {
     pendingX: Number(g.pendingX),
     pendingY: Number(g.pendingY),
     hits: [Number(g.hits[0]), Number(g.hits[1])] as [number, number],
+    shotMap: [BigInt(g.shotMap[0]), BigInt(g.shotMap[1])] as [bigint, bigint],
     winner: g.winner,
     lastActionAt: Number(g.lastActionAt),
   };
@@ -234,19 +284,45 @@ export function useGame(gameId: number): UseGameResult {
 
   // refetchVersion:watch 收到事件 / 手动 refetch 时 +1,触发取数 effect 重跑(重取 struct+shots)。
   const [refetchVersion, setRefetchVersion] = useState(0);
+  // I3:重取去抖定时器(尾触发)。一阵密集事件(WS 重连回放、相邻块 attack→respond)会连发多次 bump,
+  // 每次都从 deployBlock 全量重扫一遍 struct+logs;尾触发 debounce 把一阵 bump 并成一次重取。
+  const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // 事件日志池(ref:不触发渲染);logVersion 驱动 useMemo 重排成有序数组。
   const logPoolRef = useRef<Map<string, GameLogEntry>>(new Map());
   const [logVersion, setLogVersion] = useState(0);
 
+  // 块时间 memo(§7.3):blockNumber → block.timestamp(unix 秒),同块只查一次 getBlock(永不重取);
+  // inFlight 防并发重取同块;blockTimeVersion 在缓存填充后 +1,驱动 eventLog memo 重套 ts。
+  const blockTimeRef = useRef<Map<bigint, number>>(new Map());
+  const inFlightBlocksRef = useRef<Set<bigint>>(new Set());
+  const [blockTimeVersion, setBlockTimeVersion] = useState(0);
+
   const validId = Number.isInteger(gameId) && gameId > 0;
 
   /**
-   * 触发重取(useCallback([]) 稳定身份:只 setState,setter 身份恒定)。**身份稳定是必须的**——
-   * 它被四个 onLogs 闭包,onLogs 又喂给 useWatchContractEvent(把 onLogs 列进 effect 依赖)。
-   * 不稳定即每事件触发订阅拆毁重建(3.4 I1 同因)。
+   * 触发重取(尾触发 debounce,I3)。**身份稳定是必须的**——它被四个 onLogs 闭包,onLogs 又喂给
+   * useWatchContractEvent(把 onLogs 列进 effect 依赖),不稳定即每事件触发订阅拆毁重建(3.4 I1 同因)。
+   * useCallback([]) + 定时器存 ref → 身份恒定:每次 bump 清掉上一个待触发定时器、重排一个 60ms 的,
+   * 一阵密集 bump 收敛成最后一次,60ms 静默后才真正 setRefetchVersion(+1)触发一次重取。
+   *
+   * 对 stale-guard 无影响:debounce 只降低 bump 频率,每次真正 bump 仍触发恰一次取数 effect、各带自己的
+   * alive 旗(见取数 effect);并未改变「新一轮取数作废上一轮」的语义,故不复杂化 stale-guard(任务给的豁免条件不触发)。
    */
-  const bumpRefetch = useCallback(() => setRefetchVersion((v) => v + 1), []);
+  const bumpRefetch = useCallback(() => {
+    if (refetchTimerRef.current !== null) clearTimeout(refetchTimerRef.current);
+    refetchTimerRef.current = setTimeout(() => {
+      refetchTimerRef.current = null;
+      setRefetchVersion((v) => v + 1);
+    }, 60);
+  }, []);
+
+  // 卸载时清掉待触发的重取定时器(防 setState-after-unmount 与定时器泄漏)。
+  useEffect(() => {
+    return () => {
+      if (refetchTimerRef.current !== null) clearTimeout(refetchTimerRef.current);
+    };
+  }, []);
 
   /** 把若干日志项灌入池(按 posKey 去重),有新增才 bump logVersion。同 bumpRefetch 稳定身份。 */
   const ingestLog = useCallback((entries: (GameLogEntry | null)[]) => {
@@ -262,6 +338,7 @@ export function useGame(gameId: number): UseGameResult {
     if (changed) setLogVersion((v) => v + 1);
   }, []);
 
+  // 手动重取走同一条(debounced)路径:逃生口几乎用不到,延后 60ms 无感,不另开一条立即路径。
   const refetch = useCallback(() => bumpRefetch(), [bumpRefetch]);
 
   // 部署信息(地址 + deployBlock);曾失败(demo 后启)则 reload 重取一次。失败 → DeploymentNotFoundError 文案。
@@ -295,14 +372,30 @@ export function useGame(gameId: number): UseGameResult {
 
   // ── 取数:getGame struct + ShotResolved 回放(并日志回填)。──
   // 依赖**刻意不含 address**(见模块注释:账户切换零 refetch)。refetchVersion 变即重取(watch 触发)。
+  //
+  // I1 关键路径拆分(对齐 useGameList「getLogs 失败非致命」的既定先例):
+  //   关键路径 = getGame(真理源 struct)+ ShotResolved 回放(载荷:驱动 myShots/enemyShots 与
+  //   firedCells 派生)——这两者任一失败 → 整钩 error(view=null,顶层报错),因为缺了它们视图不成立。
+  //   非致命 = GameJoined/ShotFired/GameFinished 三类**装饰性事件日志**回填(§7.3 战报流):
+  //   它们只喂事件日志池(逐条流水),缺了不影响对局可玩/可看,且 live watch 仍会从此刻起捕获新事件。
+  //   故这三类用 Promise.allSettled 各自独立——任一 reject 只是少一段历史流水,不拖垮一个有效的 getGame。
+  //   (此前是 5 个 getLogs 同一 Promise.all:任一 getLogs reject 即整页 error,白丢一个合法 struct。)
   useEffect(() => {
     if (!validId || !deployment || !publicClient) return;
     let alive = true;
+    const fromBlock = BigInt(deployment.deployBlock);
+    const logsFor = (name: string) =>
+      publicClient.getLogs({
+        address: deployment.battleship,
+        event: battleshipAbi.find((x) => x.type === 'event' && x.name === name) as AbiEvent,
+        args: { gameId: BigInt(gameId) },
+        fromBlock,
+        toBlock: 'latest',
+      });
     (async () => {
       try {
-        const fromBlock = BigInt(deployment.deployBlock);
-        // struct + 全部历史日志并发取(struct 是真理源;ShotResolved 给坐标级结果;四类入日志池)。
-        const [game, resolvedLogs, joinedLogs, firedLogs, finishedLogs] = await Promise.all([
+        // ── 关键路径:struct + ShotResolved 并发(任一失败即抛 → catch → error)。──
+        const [game, resolvedLogs] = await Promise.all([
           publicClient.readContract({
             address: deployment.battleship,
             abi: battleshipAbi,
@@ -316,27 +409,6 @@ export function useGame(gameId: number): UseGameResult {
             fromBlock,
             toBlock: 'latest',
           }),
-          publicClient.getLogs({
-            address: deployment.battleship,
-            event: battleshipAbi.find((x) => x.type === 'event' && x.name === 'GameJoined') as AbiEvent,
-            args: { gameId: BigInt(gameId) },
-            fromBlock,
-            toBlock: 'latest',
-          }),
-          publicClient.getLogs({
-            address: deployment.battleship,
-            event: battleshipAbi.find((x) => x.type === 'event' && x.name === 'ShotFired') as AbiEvent,
-            args: { gameId: BigInt(gameId) },
-            fromBlock,
-            toBlock: 'latest',
-          }),
-          publicClient.getLogs({
-            address: deployment.battleship,
-            event: battleshipAbi.find((x) => x.type === 'event' && x.name === 'GameFinished') as AbiEvent,
-            args: { gameId: BigInt(gameId) },
-            fromBlock,
-            toBlock: 'latest',
-          }),
         ]);
         if (!alive) return;
         setSnapshot(projectSnapshot(game as unknown as GetGameResult));
@@ -345,20 +417,28 @@ export function useGame(gameId: number): UseGameResult {
             .map(toResolvedShot)
             .filter((s): s is ResolvedShot => s !== null),
         );
-        // 历史四类入日志池(去重幂等;增量 watch 后续追加)。
-        ingestLog(
-          [
-            ...(resolvedLogs as DecodedLog[]),
-            ...(joinedLogs as DecodedLog[]),
-            ...(firedLogs as DecodedLog[]),
-            ...(finishedLogs as DecodedLog[]),
-          ].map(toLogEntry),
-        );
+        // ShotResolved 也进日志池(resolved 流水);它属关键路径,已取到,恒入池。
+        ingestLog((resolvedLogs as DecodedLog[]).map(toLogEntry));
         setError(null);
         setIsLoading(false);
+
+        // ── 非致命:三类装饰性事件日志各自独立回填(allSettled:某类失败只是少一段流水,不报错)。──
+        const cosmetic = await Promise.allSettled([
+          logsFor('GameJoined'),
+          logsFor('ShotFired'),
+          logsFor('GameFinished'),
+        ]);
+        if (!alive) return;
+        // 取出 fulfilled 各批的 logs(rejected 的那类跳过——少一段历史流水,不报错);viem getLogs 返回型复杂,
+        // 沿用本钩既有 `as DecodedLog[]` 投影风格,只在 status 收窄后取 value。
+        const cosmeticLogs = cosmetic.flatMap((r) =>
+          r.status === 'fulfilled' ? (r.value as unknown as DecodedLog[]) : [],
+        );
+        ingestLog(cosmeticLogs.map(toLogEntry));
       } catch (e) {
         if (!alive) return;
         // getGame 对不存在的 id 返回零 struct(不 revert),故这里的抛多是 RPC/网络问题,非「不存在」。
+        // 注:这里只捕获关键路径(getGame / ShotResolved)的失败;三类装饰日志的失败被 allSettled 吞掉,不到此。
         setError(e instanceof Error ? e.message : '读取对局失败。');
         setIsLoading(false);
       }
@@ -418,11 +498,50 @@ export function useGame(gameId: number): UseGameResult {
     onLogs: onEventLogs,
   });
 
-  // 事件日志:池 → 有序数组(logVersion 变即重排)。
+  // ── 块时间补全(§7.3 战报流的墙钟):池里新出现的块号 → getBlock 取 timestamp,按块号 memo 永不重取。──
+  // 触发:logVersion 变(池新增条目 → 可能带来新块)。对每个未缓存且非在取的块发一次 getBlock,
+  // 成功即写 blockTimeRef 并 bump blockTimeVersion(驱动 eventLog memo 重套 ts);失败静默(该块 ts 缺省,
+  // 条目仍在,渲染层降级不显时间——不让一次 getBlock 失败吞掉事件)。依赖**不含 address**(与取数同纪律,无关视角)。
+  useEffect(() => {
+    if (!publicClient) return;
+    const need = collectUntimedBlocks(
+      logPoolRef.current.values(),
+      blockTimeRef.current, // Map:只用其 has(blockNumber) 判已缓存
+      inFlightBlocksRef.current,
+    );
+    if (need.length === 0) return;
+    let alive = true;
+    for (const bn of need) {
+      inFlightBlocksRef.current.add(bn);
+    }
+    void (async () => {
+      let filled = false;
+      await Promise.all(
+        need.map(async (bn) => {
+          try {
+            const block = await publicClient.getBlock({ blockNumber: bn });
+            blockTimeRef.current.set(bn, Number(block.timestamp));
+            filled = true;
+          } catch {
+            // 该块时间取不到:不写缓存(留待下次 logVersion 变时重试);条目 ts 缺省,不阻塞渲染。
+          } finally {
+            inFlightBlocksRef.current.delete(bn);
+          }
+        }),
+      );
+      if (alive && filled) setBlockTimeVersion((v) => v + 1);
+    })();
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps —— 池随 logVersion 变;blockTimeRef/inFlight 是 ref,address 无关。
+  }, [logVersion, publicClient]);
+
+  // 事件日志:池 → 有序数组(logVersion 变即重排)+ 套上已知块时间 ts(blockTimeVersion 变即重套)。
   const eventLog = useMemo(
-    () => [...logPoolRef.current.values()].sort(comparePos),
-    // eslint-disable-next-line react-hooks/exhaustive-deps —— 池随 logVersion 变,version 是重算触发器。
-    [logVersion],
+    () => applyBlockTimes([...logPoolRef.current.values()].sort(comparePos), blockTimeRef.current),
+    // eslint-disable-next-line react-hooks/exhaustive-deps —— 池随 logVersion 变、块时间随 blockTimeVersion 变,二者是重算触发器。
+    [logVersion, blockTimeVersion],
   );
 
   // ── 派生(纯函数;**对 address 重算即视角翻转,无网络**)──
