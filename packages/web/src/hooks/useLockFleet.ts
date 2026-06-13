@@ -150,6 +150,9 @@ export function useLockFleet(): {
         try {
           if (mode === 'create') {
             // gameId 未知 → 先写 pending 槽(不含 gameId)。
+            // M3 注:被放弃的 create(savePending 成功,随后 prove/tx 失败且用户不重试即离开)会在
+            // (chainId,contract,address) 键上留一个无 gameId 的陈旧 pending 槽——可安全覆盖(下次
+            // create 同键 last-writer-wins)或忽略(无 gameId 映射到它,归约层根本不会读到);主动清理是 3.8 的事。
             savePending(deployment.chainId, deployment.battleship, address, {
               ships: board,
               salt,

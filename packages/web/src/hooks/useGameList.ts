@@ -20,7 +20,7 @@
  * 改成「只扫最近 N 万块」(fromBlock = max(deployBlock, head-N)),否则 getLogs 范围过大被 RPC 拒。
  * 当前 fromBlock=deployBlock,留此注记;迁测试网时在此处加 head 推算与 N 上限即可,无需改归约层。
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { AbiEvent, Log } from 'viem';
 import { usePublicClient, useWatchContractEvent } from 'wagmi';
 import { battleshipAbi } from '../lib/abi.ts';
@@ -102,8 +102,16 @@ export function useGameList(): UseGameListResult {
   const poolRef = useRef<Map<string, GameEvent>>(new Map());
   const [version, setVersion] = useState(0);
 
-  /** 把若干 GameEvent 灌入池(按 posKey 去重);有新增才 bump version 触发重算。 */
-  function ingest(events: (GameEvent | null)[]): void {
+  /**
+   * 把若干 GameEvent 灌入池(按 posKey 去重);有新增才 bump version 触发重算。
+   * useCallback([]) 稳定身份:只闭包 poolRef(ref,身份恒定)与 setVersion(setter,身份恒定),
+   * 故空依赖即正确。**身份稳定是必须的**——下面三个 onLogs 包裹本函数喂给 useWatchContractEvent,
+   * 而 wagmi v2 的 useWatchContractEvent 把 onLogs 列进 effect 依赖(viem 的 observerId 去重键却
+   * 不含 onLogs):若 ingest/onLogs 每次渲染换新身份,每灌一条事件→version++→重渲染→onLogs 换身份
+   * →watch effect 拆毁重建(uninstallFilter + 重新 createContractEventFilter),且新 filter 有一个
+   * 轮询周期的 initialized=false 空窗可能漏掉落在窗口内的事件。稳定后三个订阅只挂一次、跨事件存活。
+   */
+  const ingest = useCallback((events: (GameEvent | null)[]): void => {
     let changed = false;
     for (const ev of events) {
       if (!ev) continue;
@@ -114,7 +122,7 @@ export function useGameList(): UseGameListResult {
       }
     }
     if (changed) setVersion((v) => v + 1);
-  }
+  }, []);
 
   // 部署信息(地址 + deployBlock);曾失败(demo 后启)则 reload 重取一次。
   useEffect(() => {
@@ -169,35 +177,50 @@ export function useGameList(): UseGameListResult {
     return () => {
       alive = false;
     };
-    // ingest/poolRef 引用稳定;只在部署/client 变化时回填一次。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [deployment, publicClient]);
+    // ingest 是稳定 useCallback(空依赖),列入仅为诚实表达依赖;实际只在部署/client 变化时回填一次。
+  }, [deployment, publicClient, ingest]);
 
   // ── 增量订阅(§7.1 watchContractEvent:用户永不手动刷新)──
   // 三类事件各一个订阅;onLogs 把新 log 投影入池。enabled 门控等部署就绪。
   const watchEnabled = !!deployment;
   const watchAddress = deployment?.battleship;
 
+  // 三个 onLogs 用 useCallback 钉死身份(依赖只有稳定的 ingest)。理由见 ingest 上方注释:
+  // wagmi 的 useWatchContractEvent 把 onLogs 列进 effect 依赖,onLogs 换身份即触发订阅拆毁重建;
+  // 稳定后三个订阅各只挂一次、跨事件灌入持续存活(不再每事件 uninstall/重建 filter)。
+  const onCreatedLogs = useCallback(
+    (logs: Log[]) => ingest(logs.map((l) => toGameEvent(l as DecodedLog))),
+    [ingest],
+  );
+  const onJoinedLogs = useCallback(
+    (logs: Log[]) => ingest(logs.map((l) => toGameEvent(l as DecodedLog))),
+    [ingest],
+  );
+  const onFinishedLogs = useCallback(
+    (logs: Log[]) => ingest(logs.map((l) => toGameEvent(l as DecodedLog))),
+    [ingest],
+  );
+
   useWatchContractEvent({
     abi: battleshipAbi,
     address: watchAddress,
     eventName: 'GameCreated',
     enabled: watchEnabled,
-    onLogs: (logs) => ingest(logs.map((l) => toGameEvent(l as DecodedLog))),
+    onLogs: onCreatedLogs,
   });
   useWatchContractEvent({
     abi: battleshipAbi,
     address: watchAddress,
     eventName: 'GameJoined',
     enabled: watchEnabled,
-    onLogs: (logs) => ingest(logs.map((l) => toGameEvent(l as DecodedLog))),
+    onLogs: onJoinedLogs,
   });
   useWatchContractEvent({
     abi: battleshipAbi,
     address: watchAddress,
     eventName: 'GameFinished',
     enabled: watchEnabled,
-    onLogs: (logs) => ingest(logs.map((l) => toGameEvent(l as DecodedLog))),
+    onLogs: onFinishedLogs,
   });
 
   // 归约:池 → 进行中列表(version 变即重算)。
