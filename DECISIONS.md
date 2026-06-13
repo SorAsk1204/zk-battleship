@@ -258,3 +258,40 @@ wagmi config 必须静态,合约地址才运行时 fetch;chain 用 viem 内置 a
 - 键盘:聚焦棋盘 → 仅 1 格 tabIndex=0(roving 单 tabstop);ArrowRight×2+ArrowDown → 焦点 (0,0)→(2,1)=C-2,tabIndex=0 随迁,焦点环 phosphor;手持后焦点 E-5 按 Enter → 航母落 (4,4)..(8,4)(键盘落子路径成立)。0 console error。
 
 **文件**:`src/components/board/{BoardGrid.tsx, PlacementBoard.tsx, FleetDock.tsx, placement.ts, placement.test.ts}`(新增)、`src/components/ExportButton.tsx`(新增)、`src/pages/NewGame.tsx`(重写:真实布阵 + 锁定→导出→等待)。复用 boardLogic(shipCells/validateBoard/SHIP_LENGTHS)、useLockFleet/ProofStatus(3.4)、storage.exportBoardJSON、commitment/salt/format/useProver/contracts/wagmi——均 re-use,未重造。
+
+### 2026-06-13 Task 3.6 useGame + 三幕切换 — 相位驱动单局页 + join 流程 + 账户切换视角翻转
+
+真浏览器验收(pnpm demo + playwright)全程通过,**0 console error**(仅 React-Router v7 future-flag warning,同 3.3/3.4/3.5,与本任务无关)。证据见下「browser」。
+
+**(分层)取数(useGame,React/wagmi)与派生(gameView.ts,纯函数)严格分工。** gameView.ts(3.6 前置,已 41 单测绿)是「getGame struct + ShotResolved 回放 + 当前地址 → GameView」的唯一纯映射;`useGame(id)` 只负责取数并喂它:
+- **struct 投影**:`publicClient.readContract({getGame})` → `projectSnapshot` 投影成 GameSnapshot(uint8→number、承诺 bigint、turn 收窄 0/1;**不**投影 shotMap 位图——坐标级 hit/miss 走事件)。**为何用命令式 readContract 而非 useReadContract 钩子**:本钩子要让 watch 收到事件时**同时**重取 struct + ShotResolved(两者必须同刷,否则坐标级历史与计数态漂移),命令式在一个 effect 里 `Promise.all` 一把取齐最直;`useReadContract` 是独立缓存,要再起一套 refetch 协调,反把「一次刷新」拆成两条异步线易竞态。与 3.4 useGameList 的命令式 getLogs 同治理。
+- **getLogs 回放**:`ShotResolved`(从 deployBlock,`args:{gameId}` 只取本局)→ ResolvedShot[](坐标级);并回放 GameJoined/ShotFired/GameFinished 进 append-only **事件日志池**(§7.3 战报流,3.7 渲染;3.6 只用到计数)。
+- **watch 增量**:四类事件(ShotFired/ShotResolved/GameJoined/GameFinished)各一个 `useWatchContractEvent`,`onLogs` 既**触发 refetch**(重取 struct+shots)又追加日志。
+
+**(决策)事件当刷新触发器、不做乐观 reducer(记此,gameView.ts 模块注释亦详述)。** 真理源是 getGame 的 struct(phase/turn/hits/pending 全在链上)。事件只两用:(a) ShotResolved 回放出 struct 给不出的**坐标级** hit/miss(struct 只给 hits 计数 + shotMap 位图,位图只标「打过」不标结果;哪格 hit 哪格 miss 只在事件里);(b) 当刷新/动效触发器(收事件 → useGame refetch struct)。**不**用事件乐观推进 struct(turn/phase)——那等于前端重写一遍合约状态机、易与链上漂移。本地 anvil 无重组(no-reorg),事件不被回滚,故「事件触发 refetch」这条简化安全(测试网若有重组需加确认数,届时在 watch 层加,派生/取数层不动)。
+
+**(决策,§7.1 killer feature 的关键不变量)账户切换零 refetch。** useGame 取数 effect 的依赖是 `[validId, gameId, deployment, publicClient, refetchVersion]`——**刻意不含 address**。deriveGameView 对 address 是纯函数:同一份 snapshot+shots 换地址,myIdx/isMyTurn/my-enemy shots/hits 全翻。故 P0↔P1 切换只让 `useMemo([snapshot,shots,address])` 重算,**零网络**。若把 address 列进取数 effect,每次切账户白白重拉 struct + 全部日志,既慢又违背「同一局、不同立场」本意。**实测**:battle 幕切 P1→P0,注入 fetch 计数器测得 **eth_call=0 / eth_getLogs=0 / 总 RPC=0**、无 loading 态、回合横幅由「等待对手开炮」翻成「轮到你开炮」、对手地址 P0↔P1 互换、视角 P1↔P0 互换(见 browser)。
+
+**(决策,3.4 I1 同款纪律)watch 回调全 useCallback 钉死身份。** wagmi 的 useWatchContractEvent 把 onLogs 列进 effect 依赖(viem observerId 去重键却不含 onLogs):onLogs 每渲染换身份 → 订阅拆毁重建(uninstallFilter + 重 createFilter,新 filter 一个轮询周期空窗可能漏事件)。故 `bumpRefetch`/`ingestLog`/`onEventLogs` 全 `useCallback`(依赖仅稳定的 setter/ingest),四个订阅各只挂一次跨事件存活。**无重取风暴**:onLogs 只 bump `refetchVersion`,取数 effect 不 bump 它自己;取数里 `ingestLog` 只 bump `logVersion`(非取数 effect 依赖)——单向无环。
+
+**(reviewer 建议)PostLockPanel 抽出 NewGame 的 post-lock 块,等待 UI 只一处。** 3.5 时 /game/:id 还是占位页,故 3.5 把锁定后「上锁盘 + 导出 + 等待」就地留在 NewGame。3.6 把 /game/:id 建成相位驱动页后:NewGame 锁定 `done` 即 `navigate('/game/:id')`(回到 3.4 的最简收口,只是这次落在真页),Game.tsx 的 p0-waiting 幕(act='placement' 且 myIdx===0)渲染 `PostLockPanel`——**等待 UI 单一实现**,不再两处各写。PostLockPanel 拿到的是 `Board`(storage 还原 / 锁定定格),没有布阵 reducer 态,故上锁盘**直接用 BoardGrid 原语**(全盘 disabled + 占格 ▦ + 暗磷光,从 board 经 shipCells 算占用格),**不**经 PlacementBoard(后者要 PlacementState)。Props `{board,salt,commitment,gameId,address,chainId,contract,showEnterLink?}`。
+
+**(决策)join 成功不本页跳转,靠相位自动切幕。** Game.tsx 在 act='placement' 且非 P0(observer / p1 尚空)时渲染 **join 模式布阵**(复用 PlacementBoard/FleetDock/placementReducer/`useLockFleet({mode:'join',gameId})`/ProofStatus,与 NewGame 同套原语,薄包一层布局 JSX——重逻辑全在复用单元里,不抽 PlacementScreen,YAGNI)。join `done` **不** navigate:合约 joinGame 把 phase 置 AwaitingAttack(turn=0,P0 先攻),useGame 的 GameJoined watch → refetch → view.act 自动变 'battle',本页自然切对战幕(§7.1 相位驱动)。**实测**:P1 锁定加入 → 证明+joinGame → 页面**无手动刷新自动进对战幕**,回合横幅 P1 视角「等待对手开炮」(turn=0=P0)。
+
+**(决策)p0-waiting 棋盘从 storage 还原(`loadBoard(chainId,contract,id,address)`)。** P0 等 P1 期间要展示自己的上锁盘(§7.3),棋盘在 §8 落盘(create 经 promotePending 迁到正式键 `bs:{chainId}:{contract}:{id}:{addr}`)。Game.tsx 的 P0Waiting 子组件 `loadDeployment` 后 `loadBoard` 还原 → 有则 PostLockPanel,**缺失**(换浏览器 / 清存储)则最小提示「本地棋盘缺失,无法展示布局(完整恢复/导入见结算前)」+ 等待文案(完整 PersistenceBanner + 导入恢复是 3.8,此处最小面)。
+
+**(三幕)** Game.tsx `useGame(id)` → `view.act` 分派:loading(声呐扫描中…/spinner,无假进度)→ notfound(getGame 对不存在 id 返回零 struct phase None,**不 revert**;「未找到对局 #N」+ 返回大厅,即 3.4 deferred 的 join-by-id-typo landing,§7.6)→ placement(P0 等待 / join 布阵)→ battle(**最小占位 + 真实派生**:回合横幅 4 态[轮到你开炮/等待对手开炮/轮到你应答/对手应答中,由 isMyTurn×phase 推]、双方被命中 x/17、pending 坐标、双方开炮数、对手短地址、我的视角;3.7 换双盘+准星+自动应答)→ finish(**最小占位**:你赢了/对局已取消/对手获胜 + 战损 + 返回大厅;3.8 完整结算)。整页随 watch 实时刷新,**无手动刷新按钮**。
+
+**(单测)** 新增 `useGame.test.ts` 19 例:`projectSnapshot`(struct→GameSnapshot:玩家/承诺/uint8 转换/越界 phase 归 None/turn 收窄/不存在零 struct)、`toResolvedShot`(完整/miss/缺字段→null/totalHits 缺省)、`toLogEntry`(四类事件投影/非四类→null/缺 pos→null)、`comparePos`(块号优先 + 块内 logIndex + 大 bigint 不溢出)——钉死「链上→派生输入」投影契约(React 钩子取数本身在浏览器验收,node 环境无 testing-library,同 gameView/gameListReducer 治理)。web 测试 220 →(含 gameView 41 + useGame 19)**239 全绿**;tsc/build 干净;**主 bundle snarkjs-free 维持**(build 后 grep `index-*.js`:groth16/snarkjs/ffjavascript/exportSolidityCallData/powersOfTau/wtns/plonk/fflonk **全 0**;worker chunk `prover.worker-*.js` 含 groth16×4 + exportSolidityCallData×3)。root `pnpm run test:all` 四包全绿(circuits/contracts/e2e[真 anvil+证明]/web)。
+
+**(browser 证据,pnpm demo + playwright)**:Battleship `0x9fe46…`,anvil 31337,P0 `0xf39F…2266` / P1 `0x7099…79C8`。
+- **not-found**:`/game/9999` → 「未找到对局 #9999」+「← 返回大厅」,0 error(截图 36-notfound)。
+- **P0 create→waiting**:大厅→创建→`/game/new`→布满 5 船(17 占格)→锁定舰队→ board 证明 + createGame → **自动导航 `/game/1`** → p0-waiting 幕渲染 PostLockPanel:上锁盘 17 格 `[disabled]`+▦+「已部署(已锁定)」aria(A-1..E-1/A-3..D-3/A-5..C-5/A-7..C-7/A-9..B-9 = 我刚摆的布局,storage 正确还原)、「🔒 已锁定·10×10·17 占格」、「导出部署文件」、「声呐搜索对手中… 把对局编号 #1 发给你的对手」(截图 36-p0-waiting)。
+- **切 P1 → 视角翻转到 join 布阵**:同 `/game/1` 不动,切 P1 → 幕从 p0-waiting 翻成 **join 模式布阵**(「加入对局 #1」+ 空布阵盘 + 船坞 5 船 +「已就位 0/5…锁定舰队加入」)——同一局、不同立场,纯派生翻转(截图 36-p1-join-placement)。
+- **P1 布阵→加入→自动进对战**:P1 摆 5 船 →「锁定舰队·加入」→ board 证明 + joinGame → **无手动刷新自动进 battle 幕**(等 30s 内 `对战·Task 3.7 实现` marker 出现);P1 视角真实派生:回合「等待对手开炮」(turn=0=P0)、我方/对手战损 0/17、开炮数 0/0、待应答 —、对手 0xf39F…2266、视角 P1(截图 36-battle-p1-derived)。
+- **battle 幕账户切换翻转(§7.1 killer feature)**:切 P0 → 同一局派生全翻:回合「等待对手开炮」→**「轮到你开炮」**、对手 0xf39F…2266→**0x7099…79C8**、视角 P1→**P0**;注入 fetch 计数器测切换 **0 RPC、无 loading**(截图 36-battle-p0-flipped)。
+- **持久化(§8)**:localStorage 正式键 `bs:31337:0x9fe46…:1:0xf39f…`(P0,promotePending 迁移后无 `:pending:` 残留)+ `bs:31337:0x9fe46…:1:0x7099…`(P1,join 直写正式键,不碰 pending),均 ships=5+commitment ✓。
+- **大厅 live**:回大厅,#1 自动显「进行中 · P0 0xf39F…2266 · P1 0x7099…79C8」(GameJoined watch 升级状态)。
+- 全程 **0 console error**(仅 RR v7 future-flag warning)。demo 干净停(anvil + vite kill,端口释放)。
+
+**文件**:`src/hooks/{useGame.ts, useGame.test.ts}`(新增)、`src/components/PostLockPanel.tsx`(新增,抽自 NewGame post-lock 块)、`src/pages/{Game.tsx(重写:三幕路由 + join 布阵), NewGame.tsx(改:done 导航 /game/:id,删就地 post-lock 块)}`;`src/hooks/{gameView.ts, gameView.test.ts}`(3.6 前置,纯派生核 + 41 单测,本提交一并纳入)。复用 gameView/storage(loadBoard)/contracts(loadDeployment/DeploymentNotFoundError)/boardLogic(shipCells/Board)/useLockFleet/ProofStatus/PlacementBoard/FleetDock/placement/BoardGrid/ExportButton/salt/format/useProver/abi——均 re-use,未重造。
