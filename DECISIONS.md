@@ -221,3 +221,40 @@ wagmi config 必须静态,合约地址才运行时 fetch;chain 用 viem 内置 a
 - 持久化(§8):localStorage 见各局正式键 `bs:31337:0x9fe46…:{1,3,4}:0xf39f…`(P0,promotePending 后无残留 `:pending:` 键)。0 console error。
 
 **文件**:`src/hooks/{useLockFleet.ts, useGameList.ts, gameListReducer.ts}`(新增)+ `{gameListReducer.test.ts, useLockFleet.test.ts}`(新增)、`src/components/ProofStatus.tsx`(新增)、`src/pages/{NewGame.tsx(新增), Lobby.tsx(重写)}`、`src/App.tsx`(+`/game/new` 路由)。复用 3.1/3.2/3.3:storage/commitment/salt/proofArgs/errors/format/useProver/wagmi/abi 均 re-use,未重造。
+
+### 2026-06-13 Task 3.5 布阵幕 — BoardGrid 复用原语 + 点选预览交互 + 锁定→导出→等待
+
+真浏览器验收(pnpm demo + playwright)全程通过,**0 console error**(仅 React-Router v7 future-flag warning,同 3.3/3.4,与本任务无关)。证据见下「browser」。
+
+**(状态机)布阵态用 `useReducer`,不引 zustand(任务留给实现者的选择)。** 布阵态是**组件作用域、瞬时**:刷新即弃(锁定前不持久化——§8 只在锁定**成功**后落盘),无跨组件/跨路由共享需求。引全局 store 是 YAGNI;`placementReducer`(`src/components/board/placement.ts`,纯函数)把 8 个互斥转换(carry/hover/rotate/place/pickup/cancel/reset)收成一个可单测的 reducer,action 显式、转换可读,正是「一处临时交互状态」的标准解。geometry/合法性同在该模块(纯、node 可单测),React 层(PlacementBoard/FleetDock)只把手势翻成 action、把派生量翻成每格样式。
+
+**(IA)锁定成功后留在 `/game/new` 就地 in-place 呈现,不立即导航到 `/game/:id`。** §7.3 锁定后进入「等待/对战」,§8 要求锁定成功后「导出部署文件」必须可达。但 3.6 才把 `/game/:id` 建成相位驱动页;若 3.5 就跳过去,导出按钮与等待态会落在一个**还没实现它们的占位页**上 = 导出够不到(§8 违反)。故 3.5 在本页就地:棋盘上锁(`locked` cellState:占格转暗磷光 `bg-phosphor/20` + ▦ 锁标 + `[disabled]`)+ 锁定横幅「🔒 已锁定 · 10×10 · 17 占格」+「导出部署文件」(ExportButton,§8)+ 等待态「声呐搜索对手中… 对局编号 #N,把它发给你的对手」(§7.3;声呐空转动画是 M4,这里静态简版)+ 一个「进入对局 →」链接手动去 `/game/:id`。完整自动切幕在 3.6 收口。(3.4 NewGame 临时版是 done 即 `navigate('/game/:id')`,3.5 替换为就地——3.4 那条只为让 create 端到端跑通,无导出需求。)
+
+**(BoardGrid 复用契约,为 3.7 OwnBoard/SonarBoard 而设计)** `src/components/board/BoardGrid.tsx` 是纯展示 / 受控的 10×10 原语,不内置任何业务语义:
+- **cell render-prop + 样式钩子**:`renderCell(x,y)` 渲染格内容、`cellClassName(x,y)` 决定语义着色、`ariaLabel(x,y)` 给可达标签——棋盘本身不知道「己方/敌方/预览/命中」(那是各 Board 的事,3.7 用同一原语铺对战双盘);
+- **roving tabindex(§7.7 键盘可达)**:整盘只一个 tabstop,方向键 / Home / End 移动焦点,焦点格 tabIndex=0 其余 -1,移动时真实 `.focus()`;焦点环 `outline phosphor`(实测 `solid 2px rgb(53,224,200)` = `#35E0C8`)。焦点格记在 BoardGrid **内部 state**(focus 是纯 UI 关注点,不属布阵业务态,故不上提父 reducer);父级经 `onCellFocus` 得知焦点落点(布阵幕据此把预览跟到键盘焦点格);
+- 视觉(§7.2 锁定):1px `--grid` 边框、32px 直角方格、无圆角;颜色全部由 `cellClassName` 注入,原语不引调色板外颜色。
+
+**(交互模型)不用 HTML5 DnD,点选→预览→落子。** 自绘预览(`previewCells` = 复用 boardLogic.shipCells 几何),半透明磷光(`bg-phosphor/40`);`R` 旋转手持朝向、`Esc` 取消。**R/Esc 走 window 级 keydown**(仅 `carrying && !locked` 时挂载),而非棋盘格 keydown:鼠标手持时焦点通常不在任何格上(hover≠focus),实测确认只挂格级则鼠标用户按 R 不旋转;window 监听让鼠标路径与键盘路径统一可用(格级 keydown 只留 BoardGrid 处理方向键,R/Esc 不在格级重复处理,免与 window 双触发抵消)。键盘落子路径:方向键移焦点 → 预览跟随 → Enter/Space(button 原生 onClick)落子——实测 Enter 在焦点格成功落子,故键盘路径完整(非仅鼠标兜底)。
+
+**(canPlace 复用 boardLogic 真理源,不重造 overlap/bounds)** `placement.canPlaceShip(placed, shipId, candidate)`:候选船每格 ∈ [0,9]²(界内,等价 validateBoard 的「船尾 ≤ 9」)+ 无一格落在「**其它**已放置船」的占用集(无重叠;`excludeId` 摘自身旧位置,支持重放;贴边相邻合法,§4.1 不做间隔)。占用集由 boardLogic.shipCells 逐船构建(同一几何真理源,与电路/e2e/合约 fixture 共用)。**与 validateBoard 的等价**由 `placement.test.ts` 钉死:对一批全 5 船布局,逐 shipId 增量 canPlaceShip 的接受性 === `validateBoard.ok`(增量判定没分叉规则)。锁定前再过一次 `validateFinal` = `validateBoard(toBoard(...))` 总闸(双保险,与电路同判据)。
+
+**(实测发现并修复的渲染 bug:出界预览格折行)** 初版预览集用 `y*10+x` 索引**全部**几何格(含出界 x>9 / y>9);浏览器实测水平船头 (7,0) 长 5 时,出界格 (10,0)(11,0) 被折成 idx 10/11 = 格 (0,1)(1,1),把下一行无关格染了 --flare(playwright 读 DOM class 抓到 flare 落在 `0,1`/`1,1`)。修复:抽 `placement.inBoundsPreviewCells(state)` 只取在界子集,渲染层用它索引;出界船的在界部分照常染红(legal=false 整段 --flare),出界部分无格可染(预期);合法性判定仍走 previewLegal(出界即非法),与渲染解耦。加回归单测 3 例(完全在界 / 水平近右缘 / 垂直近下缘,断言绝不含 x>9 或 y>9 的格)。
+
+**(ExportButton §8)** `src/components/ExportButton.tsx`:复用 `storage.exportBoardJSON`(不自拼 JSON——导入端 importBoardJSON 依赖同一 schema:version/hex 字段/meta)把 `{ships, salt, commitment}`(bigint→hex)+ 定位 meta 收成纯对象 → Blob 下载,文件名 `battleship-game{id}-{addr6}.json`。不弹模态 / 不调 alert(§7.4)。实测下载触发 `battleship-game1-b92266.json`,内容含 ships(5)+salt(0x…)+commitment(0x…)+ version/chainId/gameId/address。
+
+**(预热)** 进入布阵幕即 `preload('board')`(3.4 handoff 建议),把 8.35MB zkey 拉取藏在布阵时间后,「锁定舰队」时证明少等网络。
+
+**(单测)** 新增 `placement.test.ts` 31 例:FLEET 取真理源长度 / shipCellsAt 几何 / canPlaceShip 界内+无重叠+贴边+重放排除自身 / **canPlaceShip≡validateBoard 等价(4 布局)** / previewCells+previewLegal / inBoundsPreviewCells 回归 3 例 / allPlaced+placedCount+toBoard+validateFinal / placementReducer 每条转换 + 非法 place no-op + 完整走一局。web 测试 127 → **158 全绿**;tsc/build 干净;**主 bundle snarkjs-free 维持**(build 后 grep `index-*.js`:groth16/snarkjs/ffjavascript/exportSolidityCallData/powersOfTau/wtns/plonk/fflonk **全 0**;worker chunk `prover.worker-*.js` 含 groth16+exportSolidityCallData)。
+
+**(browser 证据,pnpm demo + playwright,P0 视角 /game/new)**:Battleship `0x9fe46…`,anvil 31337。
+- 点船坞航母 → 棋盘随 hover 出预览:水平船头 C-3 → 预览精确落 C-3..G-3(preview-ok,aria「X-3 预览 可放置」)。
+- 手持时按 R → 预览水平↔垂直翻转(C-3..G-3 ↔ C-3..C-7),DOM class 确认。
+- 非法落子:船头 H-1 水平(长 5 出界)→ 在界 3 格 (7,0)(8,0)(9,0) 染 --flare、出界 2 格无格可染(修复后不再折行);点击 = no-op(placedCells 仍空、carrier 仍 carrying)。
+- 拿回:点已放置航母 → 回 carrying(dock「手持中」、棋盘清空),再放别处成功。
+- 放满 5 船 → 占格恰 17、「锁定舰队」出现且 enabled、进度提示消失 → 点击 → ProofStatus 终态「✓ 对局已创建 · 编号 #1」(board 证明亚秒 + anvil 即时挖矿,中间相位极快)→ 棋盘上锁(17 格 `[disabled]` + aria「…(已锁定)」+ ▦)+ 锁定横幅 + 导出按钮 + 等待态「声呐搜索对手中… #1」+「进入对局 →」/game/1。
+- 导出 → 下载 `battleship-game1-b92266.json`,内容 = ships+salt+commitment+meta(见上)。
+- 持久化(§8):localStorage 正式键 `bs:31337:0x9fe46…:1:0xf39f…`(P0),无残留 `:pending:`(promotePending 已迁)。
+- 键盘:聚焦棋盘 → 仅 1 格 tabIndex=0(roving 单 tabstop);ArrowRight×2+ArrowDown → 焦点 (0,0)→(2,1)=C-2,tabIndex=0 随迁,焦点环 phosphor;手持后焦点 E-5 按 Enter → 航母落 (4,4)..(8,4)(键盘落子路径成立)。0 console error。
+
+**文件**:`src/components/board/{BoardGrid.tsx, PlacementBoard.tsx, FleetDock.tsx, placement.ts, placement.test.ts}`(新增)、`src/components/ExportButton.tsx`(新增)、`src/pages/NewGame.tsx`(重写:真实布阵 + 锁定→导出→等待)。复用 boardLogic(shipCells/validateBoard/SHIP_LENGTHS)、useLockFleet/ProofStatus(3.4)、storage.exportBoardJSON、commitment/salt/format/useProver/contracts/wagmi——均 re-use,未重造。
