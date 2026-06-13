@@ -106,3 +106,19 @@ D6 确定性按 Task 0.3 约定对真电路重跑复核:board 与 shot 各双跑
 ### 2026-06-13 Task 2.5 — D10 schema 追加 rpcUrl 字段
 
 `web/public/deployment.json` 实际 schema = D10 五字段 + `rpcUrl`(`http://127.0.0.1:8545`,demo.ts 写入)。M3 注意:(a) `deployBlock` 是 Number;(b) `rpcUrl` 是 HTTP,wagmi 的 ws transport 须自行推导 `ws://127.0.0.1:8545`(anvil 同端口双协议),Task 3.3 落地时裁决 rpcUrl 是权威还是仅供参考并在此追记;(c) `VITE_DEMO === '1'`(字符串)仅在 pnpm demo 启动的 dev server 中存在,直接 `pnpm -F web dev` 与生产构建均为 undefined → injected connector 路径(D14)。
+
+### 2026-06-13 Task 3.1 — 坐标→标签映射(保守方案,§10 未覆盖)
+
+Design §7.3 唯一具体示例是 "D-7",§10 裁决清单未覆盖坐标→标签映射,按 §0.5 选保守方案记此:
+**x → 列字母 A–J(x=0→A, x=3→D),y → 行号 1–10(y=0→1, y=6→7),分隔符 `-`**,故 (3,6)→"D-7"
+(D 是第 4 列、7 是第 7 行,与 §7.3 示例自洽)。实现于 `packages/web/src/lib/format.ts`(`formatCoord`/`parseCoord`,双向 + 全 100 格 round-trip 测试)。
+**纯人眼显示决定,无协议影响**:协议内坐标始终是 0–9 整数对 (x,y),链上 bit = y*10+x,均不经过本映射。
+
+### 2026-06-13 Task 3.1 — viem 提前进 web 依赖(让 errors.ts 一步到位)
+
+viem 是 Task 3.3(wagmi 接线)的必装项,本任务提前装(`viem ^2.21`,实装 2.52.2,与 D8 锁定的 wagmi v2 同 viem 大版本相容)。
+理由:`errors.ts` 的 `mapContractError` 需要 viem 的 `BaseError.walk` / `ContractFunctionRevertedError` 才能从错误层级抠 revert reason;
+提前装可让 errors.ts 一次写全(纯字符串 `mapErrorReason` + viem 对象 `mapContractError` 双路径),不留半成品。
+**关键事实**:合约用 `require(cond, "CODE")` 即 Solidity `Error(string)`,ABI 里**没有自定义 error 条目**(Battleship.json `errors:[]`),
+故 reason 是普通短码字符串,从 `ContractFunctionRevertedError.reason` 取,不走 ABI error 解码。
+已验证 viem 链路浏览器安全(probe bundle 扫描:0 snarkjs / 0 node:)。
