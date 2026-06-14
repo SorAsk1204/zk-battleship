@@ -12,6 +12,12 @@
  * 旁观(observer/null):用 P0/P1 客观称谓,不用「你 / 对手」。
  *
  * 纯展示:只读 view 的 phase/isMyTurn/pendingShot/pendingShotIsForMe/isPlayer/obligatedIdx。
+ *
+ * 回合横幅滑入(M4.2b,§7.3 battle 回合切换 + §7.4「180ms 滑入」):内层 <p> 用 `key={text}`——回合文案
+ * 变化时 React 重挂该 <p>,使 .anim-banner-slide 的 CSS keyframe **重放**(180ms 一次淡入上滑)。仅文案
+ * 变才换 key(active 旗变色但文案不变时不重挂),不会在无关重渲染时虚假触发。aria-live="polite" 在外层
+ * <div> 不随 <p> 重挂而变,文案变化照常播报(live region 完好)。reduced-motion:.anim-banner-slide 的
+ * @keyframes 仅定义在 `(prefers-reduced-motion: no-preference)` 内 → reduce 用户无动画、即时显示文案(§7.4)。
  */
 import { Phase, type GameView } from '../hooks/gameView.ts';
 
@@ -56,7 +62,13 @@ export default function TurnBanner({ view }: TurnBannerProps) {
       role="status"
       aria-live="polite"
     >
-      <p className={'font-display text-base font-bold ' + (active ? 'text-phosphor' : 'text-foam')}>
+      <p
+        key={text}
+        className={
+          'anim-banner-slide font-display text-base font-bold ' +
+          (active ? 'text-phosphor' : 'text-foam')
+        }
+      >
         {text}
       </p>
     </div>

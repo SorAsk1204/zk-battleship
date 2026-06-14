@@ -16,6 +16,13 @@
  *   - 可选「进入对局 →」链接(NewGame 就地展示时给;Game.tsx 已在该路由则不给)。
  *
  * 纯展示 + 受控:不取数、不持状态;board/salt/commitment/gameId/address/chainId/contract 由父级备好。
+ *
+ * 上锁过渡(M4.2b,§7.3「成功后棋盘上锁(加锁图标 + 网格变暗),进入等待/对战」+ §7.4 动效预算):
+ * 锁定成功 = 布阵 UI 卸载、本面板**挂载**(组件级 swap),故本面板的 **mount 动画**即「上锁过渡」。
+ * 上锁棋盘外层挂 .anim-lock-settle(整体暗入沉降一次,~260ms),🔒 横幅挂 .anim-lock-banner(略晚淡入
+ * 下滑,呼应「锁落下」)。二者均为纯 CSS keyframe、只动 transform/opacity、一次性(挂载即播,末帧=常态)。
+ * reduced-motion:两类 @keyframes 仅定义在 `(prefers-reduced-motion: no-preference)` 内 → reduce 用户无
+ * 动画、即时显示上锁盘 + 🔒(§7.4「保留颜色反馈」:磷光占格 + 锁定横幅原样可见,只是不动)。
  */
 import { Link } from 'react-router-dom';
 import type { Address } from '../lib/contracts.ts';
@@ -63,24 +70,27 @@ export default function PostLockPanel({
 
   return (
     <div className="grid gap-6 lg:grid-cols-[auto_minmax(0,1fr)]" data-testid="post-lock-panel">
-      {/* 左:上锁棋盘(只读) */}
+      {/* 左:上锁棋盘(只读)。anim-lock-settle 在棋盘外层独立 wrapper(只让盘暗入沉降,不连带缩放
+          🔒 横幅——横幅有自己的 anim-lock-banner);两层互不嵌套缩放,各播各的一次性 mount 动画。 */}
       <div className="space-y-3">
-        <BoardGrid
-          label="已锁定的布阵棋盘"
-          testIdPrefix="locked"
-          disabled
-          renderCell={(x, y) =>
-            isShip(x, y) ? (
-              <span aria-hidden className="font-mono text-[10px] leading-none text-abyss">
-                ▦
-              </span>
-            ) : null
-          }
-          cellClassName={(x, y) => (isShip(x, y) ? 'bg-phosphor/20' : 'bg-console')}
-          ariaLabel={(x, y) => `${formatCoord(x, y)} ${isShip(x, y) ? '已部署(已锁定)' : '空'}`}
-        />
+        <div className="anim-lock-settle inline-block">
+          <BoardGrid
+            label="已锁定的布阵棋盘"
+            testIdPrefix="locked"
+            disabled
+            renderCell={(x, y) =>
+              isShip(x, y) ? (
+                <span aria-hidden className="font-mono text-[10px] leading-none text-abyss">
+                  ▦
+                </span>
+              ) : null
+            }
+            cellClassName={(x, y) => (isShip(x, y) ? 'bg-phosphor/20' : 'bg-console')}
+            ariaLabel={(x, y) => `${formatCoord(x, y)} ${isShip(x, y) ? '已部署(已锁定)' : '空'}`}
+          />
+        </div>
         <p
-          className="flex items-center gap-2 font-mono text-xs text-phosphor"
+          className="anim-lock-banner flex items-center gap-2 font-mono text-xs text-phosphor"
           data-testid="locked-banner"
         >
           <span aria-hidden>🔒</span> 已锁定 · 10×10 · 17 占格

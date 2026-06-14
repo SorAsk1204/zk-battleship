@@ -62,4 +62,67 @@
       scroll-behavior: auto !important;
     }
   }
+
+  /* ── M4.2b 编排过渡(Design §7.3/§7.4:回合横幅 180ms 滑入 + 锁定上锁过渡)──
+     这些是 §7.4 动效预算明确允许的两条 keyframe 动画。它们是 **animation**(非 transition),
+     不会被上方 reduced-motion 基线停掉(基线只零化 transition)——故按 §7.4「prefers-reduced-motion
+     时退化为静态、保留颜色反馈」的要求,**整段包在 no-preference 媒体内**:reduce 用户根本不会拿到
+     `animation`(类名仍在,但无对应 @keyframes 定义 → 浏览器忽略 → 即时呈现末态,文字/锁/颜色全在)。
+     全部只动 transform/opacity(合成层友好,§7.4);关键帧末帧 = 元素常态,用 `both` 兜住:backwards 让
+     带延迟的 🔒 横幅在延迟期保持起始态(不闪),forwards 持住末态到合成稳定后再交还常态(无回跳)。
+
+     触发方式见各组件:
+       - .anim-banner-slide:挂在 TurnBanner 内层 <p> 上,父级用 key={text} 在回合文案变化时重挂 <p>,
+         使本动画**重放**(180ms 一次滑入)。仅文案变才换 key → 不会在无关重渲染时虚假触发。
+       - .anim-lock-settle / .anim-lock-banner:PostLockPanel 挂载即播一次(锁定成功 = 布阵 UI 卸载、
+         本面板挂载的组件级 swap;mount 动画即「上锁过渡」)。棋盘整体暗入沉降 + 🔒 横幅淡入下滑,一次,~260ms。 */
+  @media (prefers-reduced-motion: no-preference) {
+    /* 回合横幅:从下方 6px 处淡入上滑,180ms(§7.3 battle 回合切换 + §7.4「180ms 滑入」)。 */
+    @keyframes banner-slide-in {
+      from {
+        opacity: 0;
+        transform: translateY(6px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .anim-banner-slide {
+      animation: banner-slide-in 180ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+    }
+
+    /* 上锁棋盘:整体从略亮+微缩沉降到常态(暗入 settle),260ms。opacity/transform 合成层友好。
+       起始 opacity 0.55、scale 0.985 → 末态常态(scale 1、不透明):一次轻微的「定格落锁」收束。 */
+    @keyframes lock-board-settle {
+      from {
+        opacity: 0.55;
+        transform: scale(0.985);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+    .anim-lock-settle {
+      animation: lock-board-settle 260ms cubic-bezier(0.2, 0.7, 0.3, 1) both;
+      /* 缩放绕几何中心,使「沉降」从盘心收束而非左上角。 */
+      transform-origin: center;
+    }
+
+    /* 🔒 锁定横幅:比棋盘略晚(80ms 延迟)淡入下滑,呼应「锁落下」的次序感,220ms。 */
+    @keyframes lock-banner-in {
+      from {
+        opacity: 0;
+        transform: translateY(-4px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+    .anim-lock-banner {
+      animation: lock-banner-in 220ms cubic-bezier(0.2, 0.7, 0.3, 1) 80ms both;
+    }
+  }
 }

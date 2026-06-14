@@ -20,7 +20,7 @@
  *     双方炮击数、对手短地址)。证明 useGame 正确喂战斗态;3.7 换成双盘 + 准星 + 自动应答。
  *   - act='finish'(Finished/Cancelled)→ 最小占位(你赢了 / 对局已取消 / 对手获胜)+ 返回大厅。
  */
-import { useEffect, useReducer, useState, type ReactNode } from 'react';
+import { useEffect, useReducer, useRef, useState, type ReactNode } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useAccount } from 'wagmi';
 import { shortAddr } from '../lib/format.ts';
@@ -31,6 +31,8 @@ import { randomSalt } from '../lib/salt.ts';
 import { Phase, type GameView } from '../hooks/gameView.ts';
 import { useGame } from '../hooks/useGame.ts';
 import type { GameLogEntry } from '../hooks/useGame.ts';
+import { useReducedMotion } from '../hooks/useReducedMotion.ts';
+import { finishSweepKind } from './finishSweep.ts';
 import { useLockFleet } from '../hooks/useLockFleet.ts';
 import { preload } from '../hooks/useProver.ts';
 import { useAutoRespond } from '../hooks/useAutoRespond.ts';
@@ -561,11 +563,40 @@ function BattleStatus({
 // ───────────────────────────── finish 幕(3.8 完整结算幕)─────────────────────────────
 
 /**
+ * 结算「扫屏」WAAPI 关键帧(M4.2b,§7.3:胜=整屏一次 --phosphor 扫亮;负=整屏短暂染 --flare 后熄灭
+ * 为低亮度)。结算幕无声呐棋盘,「整屏」= outcome 面板自身。只动 opacity/filter(drop-shadow/brightness),
+ * 合成层友好(§7.4);末态恒为可读稳定态(胜回正常亮度、负落 0.9 低亮度,文字始终清晰)。reduced-motion
+ * 时**不**创建动画(useReducedMotion gate),面板即时呈现静态 accent 色(§7.4 保留颜色反馈)。
+ */
+const FINISH_SWEEP_MS = 720;
+
+/** 胜:一次磷光提亮(亮度拉高 + 磷光 drop-shadow 涌起)后落回常态(末帧 = identity,稳定可读)。 */
+const SWEEP_PHOSPHOR_KEYFRAMES: Keyframe[] = [
+  { offset: 0, filter: 'brightness(1) drop-shadow(0 0 0 rgba(53,224,200,0))' },
+  {
+    offset: 0.4,
+    filter: 'brightness(1.35) drop-shadow(0 0 14px rgba(53,224,200,0.55))',
+  },
+  { offset: 1, filter: 'brightness(1) drop-shadow(0 0 0 rgba(53,224,200,0))' },
+];
+
+/** 负:整屏短暂染 --flare(亮度涌起 + 橙 drop-shadow)后**熄灭为低亮度**(末帧 brightness 0.9,fill 持留)。 */
+const SWEEP_FLARE_KEYFRAMES: Keyframe[] = [
+  { offset: 0, filter: 'brightness(1) drop-shadow(0 0 0 rgba(255,122,69,0))' },
+  {
+    offset: 0.25,
+    filter: 'brightness(1.3) drop-shadow(0 0 16px rgba(255,122,69,0.7))',
+  },
+  { offset: 1, filter: 'brightness(0.9) drop-shadow(0 0 0 rgba(255,122,69,0))' },
+];
+
+/**
  * finish 幕(结算,§7.3:展示战报[总回合、命中率、用时] + 「再来一局」回到大厅)。
  *
  * 战报全部从 eventLog + view 派生(computeBattleReport,纯函数已单测;无新链上读、无新乐观态)。
- * 视觉**功能版**:静态 outcome 色 accent(胜 --phosphor / 负 --flare / 取消 --mist),**无** §7.3 的整屏
- * 扫亮/染红动画(那是 M4)。
+ * outcome 色 accent(胜 --phosphor / 负 --flare / 取消 --mist)+ §7.3 结算扫屏(M4.2b):进结算挂载即对
+ * outcome 面板放一次扫屏——胜=磷光提亮扫亮、负=染 --flare 后熄灭为低亮度、取消=不扫(见下 sweepKind
+ * + useEffect;reduced-motion 退化为静态 accent)。
  *
  * 存储清理(§8「Finished 后该键可清理」):进 finish 即清掉**我自己**这局的正式键(removeBoard,
  * 只清我的、不碰对手的)。时机选「进 finish 一次」而非「点再来一局」——一进结算棋盘就不再需要(应答
@@ -578,6 +609,9 @@ function FinishAct({ id, view, eventLog }: { id: number; view: GameView; eventLo
   const navigate = useNavigate();
   const report = computeBattleReport(eventLog, view);
   const isPlayer = view.isPlayer;
+  const reduced = useReducedMotion();
+  // 结算扫屏的目标元素(outcome 面板 = 结算幕的「整屏」,因无声呐棋盘)。
+  const outcomeRef = useRef<HTMLDivElement | null>(null);
 
   // 进 finish 一次:清掉我自己这局的棋盘键(§8;只我的、不碰对手)。deployment 异步取到 + 我是玩家才清。
   // 依赖 [id, address]:换账户(切到另一玩家视角)也各自清自己的键。observer 不清(没有「我的键」)。
@@ -607,6 +641,26 @@ function FinishAct({ id, view, eventLog }: { id: number; view: GameView; eventLo
             accent: 'phosphor' as const,
           };
 
+  // 结算扫屏(M4.2b,§7.3 胜=磷光扫亮 / 负=染 --flare 后熄灭为低亮度)。outcome.accent 经 finishSweepKind
+  // 映成扫屏种类(纯映射已单测);胜→phosphor 关键帧、负→flare 关键帧(fill:forwards 持留低亮末态)、
+  // 取消(mist)→不扫。进结算挂载即播一次(finished 的 accent 稳定,deps 实质只在 reduced 切换时复跑)。
+  // reduced-motion:不创建动画(§7.4),面板即时呈现静态 accent 色;false→true 实时切换时 cancel 在飞动画。
+  const sweepKind = finishSweepKind(outcome.accent);
+  useEffect(() => {
+    const el = outcomeRef.current;
+    if (!el) return;
+    if (reduced || sweepKind === 'none') return; // reduce / 取消:不扫屏(静态 accent 已表意)
+    const keyframes = sweepKind === 'flare' ? SWEEP_FLARE_KEYFRAMES : SWEEP_PHOSPHOR_KEYFRAMES;
+    const anim = el.animate(keyframes, {
+      duration: FINISH_SWEEP_MS,
+      easing: 'cubic-bezier(0.2, 0.7, 0.3, 1)',
+      // 负:末帧为低亮度(brightness 0.9),用 forwards 持留(§7.3「熄灭为低亮度」);
+      // 胜:末帧 = identity(常态亮度),无需持留(默认 fill 即落回常态)。
+      fill: sweepKind === 'flare' ? 'forwards' : 'none',
+    });
+    return () => anim.cancel();
+  }, [reduced, sweepKind]);
+
   // reason 人话(视角相关:胜/负措辞不同;observer 客观)。iWon 对玩家给 true/false,observer 给 undefined。
   // cancelled 时 headline 已是「对局已取消」,reasonText('cancelled') 同文,故取消态不再重复显示 reason。
   const iWonArg = isPlayer ? view.iWon : undefined;
@@ -635,8 +689,14 @@ function FinishAct({ id, view, eventLog }: { id: number; view: GameView; eventLo
         </span>
       </div>
 
-      {/* outcome 头条 + reason(静态 accent;扫屏动画是 M4)。 */}
-      <div className={`border ${accentBorder} bg-abyss px-5 py-6`} data-testid="outcome">
+      {/* outcome 头条 + reason。outcomeRef = 结算扫屏的「整屏」目标(M4.2b;胜磷光扫亮 / 负染橙熄灭,
+          见上 useEffect)。willChange:filter 提示合成层(扫屏只动 filter/opacity)。 */}
+      <div
+        ref={outcomeRef}
+        className={`border ${accentBorder} bg-abyss px-5 py-6`}
+        data-testid="outcome"
+        style={{ willChange: 'filter' }}
+      >
         <p className={`font-display text-2xl font-bold ${accentText}`} data-accent={outcome.accent}>
           {outcome.headline}
         </p>
