@@ -5,7 +5,7 @@
 不托管资金,面向本地链与测试网,MVP 为荣誉对局——这是一次认真的 ZK 工程练习,把"承诺 + 逐步证明"范式落到一个有真实对抗面的小游戏上。
 
 - 电路:circom 2.1.9 + snarkjs 0.7.6,Groth16(`board.circom` 开局合法性 / `shot.circom` 逐炮应答)
-- 合约:Solidity 0.8.24,Foundry,单文件 `Battleship.sol` + 两个 snarkjs 导出 verifier
+- 合约:Solidity(pragma `^0.8.24`,solc `0.8.28`),Foundry,单文件 `Battleship.sol` + 两个 snarkjs 导出 verifier
 - 前端:Vite + React 18 + TypeScript + Tailwind v4,viem + wagmi v2,**证明在 Web Worker 里跑**
 - 端到端:Node + Anvil,真实证明三脚本
 - 包管理:pnpm workspace(monorepo)
