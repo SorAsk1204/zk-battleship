@@ -455,3 +455,23 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 **实证(Playwright,我方独立复测)**:800px → 状态(top 273)→ 敌方声呐(762)→ 己方(1146),`own.top>sonar.top` 己方在底 ✓、无横向溢出、盘宽固定 340px(320+轴 gutter);1440px → 己方(left 168)/声呐(left 932)同高(297)并排、己方在左 ✓、无溢出。实现者另验 768/1280/1920 全幕(battle/placement/postlock/join/finish/lobby)无溢出 + `:focus-visible` 2px --phosphor 焦点环(§7.7)。web 394 绿、build 净。commit `ecaef97`。**因系纯 CSS-order 微改 + 直接 DOM 测量验证(布局序改动测量即权威),跳过 subagent 双审查(相称)。**
 
 **留给 4.4 的 a11y 项**:CSS `order` 只重排视觉、DOM/SR/tab 序仍 中缝→己方→声呐。视觉序(状态→声呐→己方)与 tab 序在 <lg 不完全一致(WCAG 2.4.3 焦点序——但 tab 序「状态→己方→敌方」语义合理,非乱序)。4.4 a11y 评估是否需 DOM 重排;当前判定 §7.2 是视觉堆叠要求,CSS order 满足即可。
+
+---
+
+## M4 Task 4.4 —— reduced-motion 完整化 + a11y + Lighthouse≥90(§7.4/§7.7 DoD)
+
+本任务以**验证为主、最小修复**:M4 全部动效各自已 gate,逐项跑活、确认整套在 `reduce` 下正确退化;a11y 复核 M3 棋盘格 + 焦点环;Lighthouse 可访问性达标。唯一代码改动是**一枚 token 因 WCAG AA 上调亮度**(计划已预授权)。
+
+**(决策 1)`--mist` 提亮 #5A7484 → #6E8A9C(§7.7 WCAG AA 实测,计划预授权的唯一 token 调整)。** 实测(WCAG 相对亮度):原 #5A7484 对**正文**在 --abyss=3.88:1 / --console=3.55:1 / --grid=2.43:1,**全部 < 4.5:1 不达标**。关键判定:本站 `text-mist` **全部**用于 10–14px 小字(`text-[10px]`/`text-[11px]`/`text-xs`=12px/`text-sm`=14px),按 WCAG「大字」门槛(≥18.66px 粗体 / ≥24px 常规)**无一够格**→ 一律按**正文 4.5:1** 判,而非 3:1。故必须调。提亮到 #6E8A9C:--abyss **5.26:1**、--console **4.81:1**(均过 4.5:1 留余量;最小擦线值 #6E8593 console 仅 4.53 太险,故取 #6E8A9C),仍是克制的「次级文字」灰蓝。§7.2 七色基调与其余六枚 token 不动;Design.md 调色表同步加注 AA 缘由。其余文字色实测全过:--phosphor(abyss 11.5 / console 10.5 / grid 7.2)、--foam(13.0 / 11.9 / 8.1)、--flare(7.4 / 6.8 / grid 4.62)均 ≥4.5。注:`--mist` 仅在 abyss/console 上做正文(已达标);唯一与 grid 接触是 AccountSwitcher 未激活键 `hover:bg-grid`(mist-on-grid 约 3.3:1)——transient hover、axe 只查静止态不报,留置。无单测 pin `5A7484`(仅 index.css token 定义本身),故零测试改动。
+
+**(决策 2)reduced-motion 整套退化——活验证全过,无需补 fallback。** Playwright `emulateMedia({reducedMotion:'reduce'})` 在对战页(game 1)实测:声呐扫描 `getAnimations()` 1→**0** 条、`animation-name:none`;余辉层 `[data-testid=sonar-afterglow]` **不渲染**(glow 元件 2→0);`[data-burst]`=0;回合横幅 `<p>` `animation-name:none` 文案「轮到你开炮」**留存**;全文档 `document.getAnimations()` 运行中=**0**;hit/miss 标记静态色保留。结算页(finished game)`[data-testid=outcome]` `getAnimations()`=0、willChange=auto、headline「你赢了」+accent=phosphor 留存。**反向**(reduce→no-preference)扫描 0→1 复转、余辉复渲染 → 证 `useReducedMotion()`(useSyncExternalStore)**实时双向**响应。index.css 的 reduce 基线(零化 transition)+ 各组件 JS gate + 三 keyframe 包 no-preference media,三者合起来已**完整覆盖**,未发现泄漏,**未加任何新 CSS**。
+
+**(决策 3)a11y 复核——M3 棋盘格契约完好,焦点环全覆盖,零改动。** 活验证:两盘各 100 个真 `<button role=gridcell>`、容器 `role=grid`;**roving tabindex** 每盘恰 1 个 `tabindex=0`(余 -1),方向键 B-1→↓B-2→→C-2 走位正确且跳禁用格(已开炮格 disabled+aria-disabled);aria-label 含坐标+态(「A-1 命中」「C-1 未命中」「B-1 未探测,点击开炮」「E-5 海域」),读得通。真键盘 Tab 走查 7 个停靠点(标题链接→P0→P1→导入→作战记录区→棋盘单格→返回大厅)**每个**命中 `:focus-visible` + 2px --phosphor 焦点环(格用 -2px inset 环,余吃 index.css 基线),棋盘整体只占**一个** Tab 停靠(roving 生效)。
+
+**(决策 4)M4.5 焦点序(WCAG 2.4.3)——判定可辩护,保留 DOM 序不重排。** BattleAct DOM/tab 序恒为 状态→己方→敌方(CSS `order` 只改视觉不改 DOM/tab);<1024px 视觉为 状态→敌方→己方,与 tab 序差一个「己方/敌方」对调。判定**留置**:① tab 序「控制→我方防务→我方攻击」本身是连贯叙事,2.4.3 只要求焦点序「保持意义与可操作性」、**不**要求逐像素对齐视觉;② 两盘均有清晰 aria-label + 各为单 roving 停靠,无陷阱/跳格/操作性损失;③ 重排 DOM(随 resize JS 重排或复制标记)是为「非违规」过度工程。延续 M4.5 注的初判,现以活 tab 走查佐证。
+
+**(Lighthouse,真跑 v13.4.0 headless)** 对战页 **/game/1**(种子 demo-seed:game1 P0 回合,声呐 hit=(0,0) miss=(2,0))=**可访问性 100/100**,0 失败 / 27 通过(含 color-contrast、button-name、aria-required-children/parent、tabindex、target-size、aria-valid-attr-value、landmark-one-main…);大厅 **/**=**100/100**,0 失败 / 19 通过(含 color-contrast、label、link-name)。均远超 ≥90 DoD;color-contrast 通过即决策 1 的 --mist 提亮生效佐证。(注:chrome-launcher 在 Win 收尾删临时 Chrome profile 抛 EPERM,发生在**审计之后**、不影响已落盘报告,score 读取正常。)
+
+**文件**:改 `src/styles/index.css`(--color-mist #5A7484→#6E8A9C + AA 注释)、`Design.md`(调色表 --mist 值 + AA 缘由)。**无新代码、无新组件**(纯验证 + 一 token 微调)。web **394 全绿**(无测试 pin 旧 hex,零改动);tsc -b + vite build 干净。commit `<PENDING>`。
+
+**控制器复验建议**:① `pnpm demo` 后浏览器 DevTools 切 emulate prefers-reduced-motion → 对战页扫描线停、余辉灭、横幅不滑,色/字在;② 真跑 `npx lighthouse http://localhost:5173/game/1 --only-categories=accessibility`(种子见 demo-seed)复核 ≥90;③ 目视 --mist 次级文字在深底可读(对战页倒计时标签 / EventLog 时间戳 / 大厅地址)。

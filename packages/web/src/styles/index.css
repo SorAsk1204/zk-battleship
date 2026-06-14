@@ -8,7 +8,11 @@
   --color-phosphor: #35E0C8;
   --color-flare: #FF7A45;
   --color-foam: #C8D8DC;
-  --color-mist: #5A7484;
+  /* §7.7 强制 WCAG AA(实测调整):原设计值 #5A7484 在 --abyss(3.88:1)/ --console(3.55:1)上对**正文**
+     (本站 --mist 全部用于 10–14px 小字 = WCAG「正文」,需 ≥4.5:1)不达标。计划已预授权「--mist 对比实测,
+     踩 AA 线则微调亮度」。提亮到 #6E8A9C:--abyss 5.26:1、--console 4.81:1(均过 4.5:1,留余量),仍是
+     克制的「次级文字」灰蓝(§7.2 七色基调不变,只这一枚 token 因 a11y 上调亮度)。详见 DECISIONS.md / Design.md。 */
+  --color-mist: #6E8A9C;
   --radius-*: initial;   /* §7.2 radius ≤4px:rounded-md/lg 必须编译不出来 */
   --radius-xs: 2px;
   --radius-sm: 4px;

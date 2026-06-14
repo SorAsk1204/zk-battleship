@@ -271,7 +271,7 @@ event GameFinished(uint256 indexed gameId, address winner, string reason); // "1
 --phosphor: #35E0C8   主青绿:己方信息、扫描线、可交互高亮
 --flare:    #FF7A45   命中橙红:hit 标记、危险态、对方命中我方
 --foam:     #C8D8DC   正文浅灰蓝
---mist:     #5A7484   次级文字、禁用态
+--mist:     #6E8A9C   次级文字、禁用态(§7.7 WCAG AA 实测上调:原 #5A7484 对 10–14px 正文在 abyss/console 仅 3.5–3.9:1<4.5:1;提亮至 abyss 5.26:1 / console 4.81:1)
 ```
 
 字体(三角色,Google Fonts):
