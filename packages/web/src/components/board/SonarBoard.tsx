@@ -48,6 +48,15 @@ export type SonarBoardProps = {
   chainPendingOutCell: number | null;
   /** 是否我方攻击回合(phase===AwaitingAttack 且 isMyTurn):决定可点 + 准星。 */
   isMyAttackTurn: boolean;
+  /**
+   * 观者身份键(§7.1 账户切换零 RPC 翻视角)。demo 单标签页 P0↔P1 切换时本盘**不重挂**、只换成对方的
+   * myShots → ShotBurst 持有的 seenRef 还停在上一视角的格,会把新视角整段炮击史误判为「新事件」狂闪。
+   * 把它作 ShotBurst 的 React key(见下),切换那刻**只重挂 ShotBurst**:其惰性播种以当前(新视角)
+   * marks 重置 seen → 首帧 newlyResolved 为空 → 零虚假爆发;切换后真正的新应答照常弹。用 address(观者
+   * 身份)而非 view.myIdx——它是「这套 seen 属于谁」最直接的信号,断连时父级传 'none' 兜底。
+   * 注意:只 key ShotBurst,**不** key 整盘(否则 SonarSweep/SonarAfterglow 重挂、BoardGrid roving 焦点重置)。
+   */
+  perspectiveKey: string;
 };
 
 /** 标记种类 → 格底色 class(§7.2 锁定调色板)。 */
@@ -73,6 +82,7 @@ export default function SonarBoard({
   myFiredCells,
   chainPendingOutCell,
   isMyAttackTurn,
+  perspectiveKey,
 }: SonarBoardProps) {
   // 本地乐观 just-fired 格(点击开炮即设;链上接管 / resolved / 失败时清)。
   const [optimisticCell, setOptimisticCell] = useState<number | null>(null);
@@ -130,7 +140,8 @@ export default function SonarBoard({
     <>
       <SonarSweep />
       <SonarAfterglow marks={marks} />
-      <ShotBurst marks={marks} onHit={shake} />
+      {/* key=观者身份:demo 切账户翻视角时只重挂本层、以新视角 marks 重播种 seen,消除虚假爆发(见 perspectiveKey)。 */}
+      <ShotBurst key={perspectiveKey} marks={marks} onHit={shake} />
       {isMyAttackTurn && <Crosshair cell={aim} />}
     </>
   );

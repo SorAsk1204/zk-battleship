@@ -411,7 +411,15 @@ function BattleAct({
         {/* 左:己方海域(被打记录)。lg 时 order-1。 */}
         <div className="space-y-2 lg:order-1">
           <h2 className="font-mono text-xs uppercase tracking-wide text-mist">己方海域</h2>
-          <OwnBoard board={myBoard} enemyShots={view.enemyShots} pendingInCell={pendingInCell} />
+          <OwnBoard
+            board={myBoard}
+            enemyShots={view.enemyShots}
+            pendingInCell={pendingInCell}
+            // §7.1 账户切换零 RPC 翻视角时 OwnBoard 不重挂、只换成对方的标记;perspectiveKey=观者身份,
+            // 用作 ShotBurst 的 React key,使切换那刻 ShotBurst 重挂、以新视角标记重播种 seen → 不乱闪
+            // (切换后真正的新应答仍正常弹)。?? 'none' 兜断连。
+            perspectiveKey={address ?? 'none'}
+          />
           {isPlayer && boardLoaded && myBoard === null && (
             <p className="max-w-[20rem] font-mono text-[11px] text-flare" data-testid="own-board-missing">
               本地棋盘缺失,无法显示己方布局(来袭与命中标记仍据链上显示)。若轮到你应答将无法生成证明,请导入部署文件。
@@ -430,6 +438,9 @@ function BattleAct({
             chainPendingOutCell={chainPendingOutCell}
             // 部署未就绪时不放行点击(避免对 0x0 发交易);就绪后才允许我方攻击回合交互。
             isMyAttackTurn={isMyAttackTurn && deployment !== null}
+            // 见 OwnBoard 同名 prop:观者身份,作 ShotBurst 的 key,切账户翻视角时只重挂 ShotBurst 重播种
+            // seen(SonarSweep/SonarAfterglow/BoardGrid 焦点不动),消除切换那刻的虚假爆发。
+            perspectiveKey={address ?? 'none'}
           />
         </div>
       </div>
