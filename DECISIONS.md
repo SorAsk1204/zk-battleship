@@ -445,3 +445,13 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 **(浏览器实证,pnpm demo + playwright)** demo 链 game 1:① 横幅——MutationObserver 抓 turn-banner 内新 `<p>`:开炮触发回合切换 → 新 `<p>` 带 **running** `banner-slide-in`/`0.18s`(currentTime 0 刚起),aria-live=polite 在父级。② 结算——种子超时胜终局(P0 攻一炮 + evm_increaseTime 301 + P0 claimTimeout)→ 进结算幕 headline「你赢了」accent=phosphor;monkey-patch `Element.prototype.animate` 跨客户端导航(大厅输入1加入)重进 FinishAct,捕获 outcome 面板 animate:duration **720**、fill `none`、首帧 `brightness(1) drop-shadow(rgba(53,224,200,0))`=磷光扫亮(胜)。willChange 实测为 'auto'(review 修复:从常驻改为 effect 内随动画挂/清)。③ 上锁settle=与横幅同 CSS-keyframe-no-preference 机制(已证)+ 双审查覆盖。两轮 opus 审查(规格 ✅ 合规无越界 / 质量 Ready-to-merge,唯一 minor=willChange 常驻已修)。
 
 **文件**:新增 `src/pages/{finishSweep.ts, finishSweep.test.ts}`;改 `src/styles/index.css`(3 keyframes + .anim-* 全在 no-preference media)、`src/components/TurnBanner.tsx`(key={text}+.anim-banner-slide)、`src/components/PostLockPanel.tsx`(.anim-lock-settle 盘 + .anim-lock-banner 锁条,两 wrapper 防 scale 耦合)、`src/pages/Game.tsx`(FinishAct WAAPI 扫屏 + willChange scoped)。web 391→**394 全绿**(+3 finishSweep);build 干净。commit `9b78b41`(feat)+ `002c394`(review fix)。
+
+---
+
+## M4 Task 4.5 —— 响应式布局(§7.2/§7.7)
+
+**修复:BattleAct <1024px 堆叠时「己方在下」。** 此前三列仅中缝带 order-first、己方/声呐无 base order → 按 DOM 源序堆叠为 中缝→己方→声呐,己方排在**中间**,违反 §7.2「<1024px 上下排列,己方在下」。显式给三列各加 mobile base order(中缝 order-1 顶 / 声呐 order-2 / 己方 order-3 底),`lg:order-*` 桌面三列(己方|中缝|声呐 并排)保持不变。仅改 Tailwind order 类——**不动 320px 固定棋盘**(M4.1 扫描 / M4.2a 爆发覆盖层按 px 对齐到 320px 格阵,棋盘流式化会让动效漂移脱格;响应式=堆叠重排而非缩盘)。
+
+**实证(Playwright,我方独立复测)**:800px → 状态(top 273)→ 敌方声呐(762)→ 己方(1146),`own.top>sonar.top` 己方在底 ✓、无横向溢出、盘宽固定 340px(320+轴 gutter);1440px → 己方(left 168)/声呐(left 932)同高(297)并排、己方在左 ✓、无溢出。实现者另验 768/1280/1920 全幕(battle/placement/postlock/join/finish/lobby)无溢出 + `:focus-visible` 2px --phosphor 焦点环(§7.7)。web 394 绿、build 净。commit `ecaef97`。**因系纯 CSS-order 微改 + 直接 DOM 测量验证(布局序改动测量即权威),跳过 subagent 双审查(相称)。**
+
+**留给 4.4 的 a11y 项**:CSS `order` 只重排视觉、DOM/SR/tab 序仍 中缝→己方→声呐。视觉序(状态→声呐→己方)与 tab 序在 <lg 不完全一致(WCAG 2.4.3 焦点序——但 tab 序「状态→己方→敌方」语义合理,非乱序)。4.4 a11y 评估是否需 DOM 重排;当前判定 §7.2 是视觉堆叠要求,CSS order 满足即可。
