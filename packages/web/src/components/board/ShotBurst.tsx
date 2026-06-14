@@ -50,7 +50,7 @@ export type ShotBurstProps = {
   onHit?: () => void;
 };
 
-/** 一个活动中的一次性爆发元件(自增 id 作 React key,保证同格连续爆发也各自独立)。 */
+/** 一个活动中的一次性爆发元件(自增 id 作 React key;每格受 seen 门控至多爆一次,id 只保证 key 唯一稳定)。 */
 type ActiveBurst = { id: number; cell: number; kind: BurstKind };
 
 /** 涟漪 / 脉冲时长(ms):一次性、短促。涟漪略长于脉冲(扩散需要被看清),都远短于 8s 扫描周期。 */
@@ -145,7 +145,8 @@ export default function ShotBurst({ marks, onHit }: ShotBurstProps) {
   if (seenRef.current === null) seenRef.current = burstableCells(marks);
 
   const [active, setActive] = useState<ActiveBurst[]>([]);
-  // 自增 id:每个爆发唯一(同格先 miss 后……不存在,但同格连续事件也各自独立,key 不复用)。
+  // 自增 id:给每个爆发一个唯一稳定的 React key。每格受 seen 门控、至多爆一次(newlyResolved 不会再吐已见格),
+  // 故无需「同格复用 key」的考量;id 单调递增即可,跨 perspective remount 重置为 0 也无碍(旧实例 key 已随之销毁)。
   const nextIdRef = useRef(0);
   // onHit 以 ref 持有,避免进 effect deps(父级每渲染新函数)。
   const onHitRef = useRef(onHit);

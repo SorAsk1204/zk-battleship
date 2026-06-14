@@ -417,3 +417,17 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 **(浏览器实证,pnpm demo + playwright,确定性相位核验)** demo 链 31337、Battleship `0x9fe4…a6e0`;种子脚本(e2e lib 真证明直打合约)造 P0 声呐 hit@A-1(方位 315°)+ miss@C-1(330.95°)、终局 P0 回合。`getAnimations()` 实读:扫描 `startTime=0`/running/dur8000;hit 余辉 `actualStartTime=7000`==期望(315/360·8000)、底色 `rgb(255,122,69)`=--flare;miss `7354.34`==期望、底色 `rgb(53,224,200)`=--phosphor——**精确吻合**。冻帧 R=315°(currentTime=7000)截图:亮前沿精确指左上 A-1、命中余辉峰值点亮(opacity 1)、miss 暗相(opacity 0)——**视觉零偏移**。准星 hover G-7 与扫描/余辉三层共存(无回归)。两轮 opus 审查(规格独立重推几何一致 ✓ / 质量 Ready-to-merge,WAAPI 无泄漏·闭包-deps 实为正确)。
 
 **文件**:新增 `src/components/board/{sonarPhase.ts, sonarPhase.test.ts, SonarSweep.tsx, SonarAfterglow.tsx}`;改 `SonarBoard.tsx`(overlay 三层叠放)。web 364→**378 全绿**(+14 sonarPhase);tsc -b + vite build 干净。commit `8bde994`。
+
+---
+
+## M4 Task 4.2a —— 棋盘事件反馈(命中脉冲/落空涟漪/容器抖动,§7.3 一次性动效)
+
+**(决策 1)一次性反馈由「新落标记」驱动,承重不变量=刷新不重放。** 标记来自链上 ShotResolved,刷新重进时整局历史 hit/miss 会被 GameView 重放进 marks。若挂载时全部 ripple/pulse=每次刷新一片乱闪。正确语义:维护「已见格」集合,**首渲染惰性播种为当时 marks 的全部可触发格**(历史直接进 seen、永不触发),此后每渲染 `newlyResolved(seen, marks)` 取真正新格、各放一个自卸载 WAAPI 元件再并入 seen。纯增量(`shotBurst.ts: newlyResolved/burstableCells/isBurstKind`,不 mutate 入参)抽出 + 13 单测钉死(mount→0、单个新格恰一次、pending-out/in 不触发、刷新语义、pending→resolved 生命周期)。渲染层 `ShotBurst.tsx` 是其薄壳(seenRef + markKey 稳定签名作 effect dep,同 4.1 afterglow 的 glowKey 法)。
+
+**(决策 2)动效具体:miss 涟漪(--foam 描边环 scale+opacity 一次)、hit 脉冲(--flare 实心 scale+opacity+drop-shadow)、hit 抖动(`useBoardShake`:容器 translateX 0→+2→-2→+1→0,120ms,§7.3 verbatim「120ms 横向 2px」)。** 抖动判「新命中」**不另立 seen-set**——由 ShotBurst 的 `newlyResolved`(唯一真相源)经 `onHit` 回调驱动父级 `shake()`,避免两套已见格分叉。抖**容器**(包 BoardGrid 的 wrapper,不改 BoardGrid 契约)。"白色涟漪"用 --foam(#C8D8DC,白不在 7 色锁定调色板;最浅 token 达观感守纪律)。"持续低频闪烁火点"=声呐屏 4.1 SonarAfterglow(每 8s 扫过提亮=低频闪烁),**不新增持续动效**;OwnBoard(无扫描)hit 留静态 --flare。双盘对称(SonarBoard 我打敌 / OwnBoard 敌打我)。全 transform/opacity/filter,WAAPI cleanup,reduced-motion 全 gate(不放任何一次性动效,但**仍把新格并入 seen**——避免开启动效那刻历史补爆;颜色反馈由 BoardGrid 静态着色保留)。
+
+**(缺陷修复,浏览器验收暴露)demo 账户切换误爆。** §7.1 招牌:P0↔P1 同标签切换=`useGame` 对 address 纯重派生、0 RPC(fetch effect deps **故意排除 address**)。但切换只让 view 重算、**不 remount** SonarBoard/OwnBoard;ShotBurst 的 seenRef 仍持旧视角已见格,新视角历史 shots 落在不同格 → `newlyResolved` 判为「新」→ 切换瞬间一片误爆。**浏览器实证**:装 `[data-burst]` MutationObserver,P0→P1 切换触发 2 个 spurious burst(own+sonar 各 1 miss)。修复(commit e4e4ea1):BattleAct 把 `perspectiveKey={address ?? 'none'}` 线程给双盘,各盘 `<ShotBurst key={perspectiveKey}>` ——**只 remount ShotBurst**(M4.1 sweep/afterglow 相位与 BoardGrid roving 焦点不受扰),重挂即用当前(新视角)marks 重新播种 seen → 切换 0 爆;切后真新事件照常爆。`switchAccount` 是两个已连 connector 的 current 指针翻转,address 直接 P0→P1 不经 undefined,`?? 'none'` 仅全断连时启用(故无 undefined 抖动误 remount)。
+
+**(浏览器实证,修复后复验)** 切换双向(P1→P0→P1)**0 burst**(修复前 2);refresh 0 burst(原子 snapshot+shots+isLoading 提交,BattleAct 首渲染 marks 必齐→播种可靠);真 live 事件(脚本作 P1 应答 P0 的 B-1 攻击=命中)→ 恰 **1 个 sonar hit 脉冲**(+onHit→抖动)触发。两轮 opus 审查(规格 ✅ 合规无越界 / 质量 Ready-to-merge,无 critical/important;唯一 minor=一处过时注释已修)。
+
+**文件**:新增 `src/components/board/{shotBurst.ts, shotBurst.test.ts, ShotBurst.tsx}`、`src/hooks/useBoardShake.ts`;改 `SonarBoard.tsx`/`OwnBoard.tsx`(overlay 接 ShotBurst + shake wrapper + perspectiveKey)、`Game.tsx`(BattleAct 传 perspectiveKey)。web 378→**391 全绿**(+13);tsc -b + vite build 干净。commit `4a1dfbf`(feat)+ `e4e4ea1`(fix)。
