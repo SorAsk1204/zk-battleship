@@ -387,10 +387,14 @@ function BattleAct({
         </span>
       </div>
 
-      {/* 三栏:左己方海域 / 中缝 / 右敌方声呐屏。<1024px 堆叠(己方在下,§7.2)。 */}
+      {/* 三栏:左己方海域 / 中缝 / 右敌方声呐屏。
+          桌面(lg≥1024px):己方(order-1)| 中缝(order-2)| 声呐(order-3),并排三列。
+          <1024px 堆叠为单列,§7.2「己方在下」——显式给每块 mobile order,读序为
+          中缝/状态(order-1,顶,先知道轮到谁)→ 敌方声呐(order-2,你要攻击的盘)→ 己方海域(order-3,底)。
+          DOM 源序仍是 中缝→己方→声呐(对 SR 合理:状态先播,再己方,再敌方);视觉堆叠靠 order 重排。 */}
       <div className="grid gap-5 lg:grid-cols-[auto_minmax(0,1fr)_auto]">
-        {/* 中缝在 <lg 时排在最前(order-first),lg 时回中间(order-none) */}
-        <div className="order-first space-y-3 lg:order-2">
+        {/* 中缝:<lg 在最顶(order-1),lg 回中间(order-2)。 */}
+        <div className="order-1 space-y-3 lg:order-2">
           <TurnBanner view={view} />
           <HitProgress
             myHits={view.myHits}
@@ -410,8 +414,8 @@ function BattleAct({
           <EventLog entries={eventLog} myIdx={view.myIdx} />
         </div>
 
-        {/* 左:己方海域(被打记录)。lg 时 order-1。 */}
-        <div className="space-y-2 lg:order-1">
+        {/* 左:己方海域(被打记录)。<lg 排在底(order-3,§7.2「己方在下」);lg 回最左(order-1)。 */}
+        <div className="order-3 space-y-2 lg:order-1">
           <h2 className="font-mono text-xs uppercase tracking-wide text-mist">己方海域</h2>
           <OwnBoard
             board={myBoard}
@@ -429,8 +433,8 @@ function BattleAct({
           )}
         </div>
 
-        {/* 右:敌方声呐屏(我的炮击记录 + 开炮)。lg 时 order-3。 */}
-        <div className="space-y-2 lg:order-3">
+        {/* 右:敌方声呐屏(我的炮击记录 + 开炮)。<lg 排在中(order-2,在己方之上);lg 回最右(order-3)。 */}
+        <div className="order-2 space-y-2 lg:order-3">
           <h2 className="font-mono text-xs uppercase tracking-wide text-mist">敌方海域</h2>
           <SonarBoard
             gameId={BigInt(id)}
