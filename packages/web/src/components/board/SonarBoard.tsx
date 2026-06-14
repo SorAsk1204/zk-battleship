@@ -25,14 +25,16 @@
  *   3) Crosshair:仅我方攻击回合在最上层画十字准星(hover/focus 落点)。
  * reduced-motion 时扫描线停转、余辉层不渲染,标记的静态颜色反馈(格底色 + 字形)照常保留(§7.4)。
  */
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { type Address } from '../../lib/contracts.ts';
 import { formatCoord } from '../../lib/format.ts';
 import { useAttack } from '../../hooks/useAttack.ts';
+import { useBoardShake } from '../../hooks/useBoardShake.ts';
 import BoardGrid from './BoardGrid.tsx';
 import Crosshair from './Crosshair.tsx';
 import SonarSweep from './SonarSweep.tsx';
 import SonarAfterglow from './SonarAfterglow.tsx';
+import ShotBurst from './ShotBurst.tsx';
 import { cellIdx, sonarDisabledSet, sonarMarks, type MarkKind, type ShotLike } from './battleMarks.ts';
 
 export type SonarBoardProps = {
@@ -100,6 +102,11 @@ export default function SonarBoard({
 
   const { fire, status: attackStatus } = useAttack((idx) => disabledSet.has(idx));
 
+  // 命中抖动:抖**包住 BoardGrid 的 wrapper**(整盘一震,轴标随之;不改 BoardGrid 通用契约)。
+  // 「哪格是新命中」由 ShotBurst 的增量核判定(唯一真相源),经 onHit 调本 shake——不另起一套已见格。
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const shake = useBoardShake(boardRef);
+
   const onCellClick = useCallback(
     (x: number, y: number) => {
       if (!isMyAttackTurn) return; // 双保险:非攻击回合整盘 disabled,理论不达此
@@ -115,17 +122,24 @@ export default function SonarBoard({
   );
 
   // 活的声呐屏 overlay(§7.2 签名元素):**常驻**扫描线 + 相位锁定余辉(由 marks 驱动),整局都在;
-  // 十字准星仅我方攻击回合叠在最上层(对手回合无准星但屏仍活)。三层为同级兄弟,后者画在前者之上。
+  // ShotBurst = 应答**到达瞬间**的一次性爆发(miss 涟漪 / hit 脉冲),与 afterglow 互补(afterglow 是
+  // 常驻的每 8s 扫过余辉=「持续低频闪烁的火点」§7.3,本层是到达那一下的爆发);十字准星仅我方攻击回合
+  // 叠在最上层。四层同级兄弟,后者画在前者之上:扫描线 < 余辉 < 一次性爆发 < 准星(爆发盖在余辉上让
+  // 「刚命中」读得出,准星恒在最上以免被爆发糊住落点)。hit 到达经 onHit→shake 抖整盘容器。
   const overlay = (
     <>
       <SonarSweep />
       <SonarAfterglow marks={marks} />
+      <ShotBurst marks={marks} onHit={shake} />
       {isMyAttackTurn && <Crosshair cell={aim} />}
     </>
   );
 
   return (
     <div className="space-y-2">
+    {/* 抖动 wrapper:命中时抖整盘容器(§7.3「棋盘容器 120ms 横向 2px 抖动」)。inline-block 贴合
+        BoardGrid 自身宽度,不撑满列、不引发布局位移;抖动只动 transform,合成层内完成。 */}
+    <div ref={boardRef} className="inline-block">
     <BoardGrid
       label="敌方海域(声呐屏)"
       testIdPrefix="sonar"
@@ -171,6 +185,7 @@ export default function SonarBoard({
       onCellFocus={(x, y) => isMyAttackTurn && setAim({ x, y })}
       onLeave={() => setAim(null)}
     />
+    </div>
       {/* 开炮链上进度(§7.5 链上确认段;无假进度,只文案)。证明在 respond 端,attack 无证明,
           故这里只有「提交/确认」两态。**失败不在此内联**——开炮失败经页内 Toast 呈现(§7.5/§7.6,
           useAttack.fail → useToast),声呐屏下不再挂常驻红字。 */}

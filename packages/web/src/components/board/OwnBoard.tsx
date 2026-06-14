@@ -14,11 +14,21 @@
  * (那格本就是水)。船轮廓只在「无标记的船格」显现。
  *
  * 纯展示 + 受控:board / enemyShots / pendingInCell 由父级(BattleAct)备好(父级 loadBoard 一次,
- * 同源喂 OwnBoard 与 useAutoRespond,不各读一遍)。**功能版**:静态色块/点,无涟漪/脉冲/抖动(M4)。
+ * 同源喂 OwnBoard 与 useAutoRespond,不各读一遍)。
+ *
+ * ── 事件反馈(§7.3 命中/落空一次性动效,M4 Task 4.2a;与 SonarBoard 对称)──
+ * 敌方对我的炮击**应答到达**时,经 overlay 槽的 ShotBurst 放一次性动效:敌打中我(新 hit)→ --flare 脉冲
+ * + 整盘 120ms 横向 2px 抖动;敌打空(新 miss)→ --foam 涟漪扩散一次。**只有本会话新出现的标记才弹**——
+ * 刷新重进时链上历史 hit/miss 会重放进 marks,ShotBurst 的增量核(首帧播种 seen)保证它们安静留底不乱闪。
+ * 留下的火点在此处即静态 --flare 实心格(OwnBoard 无声呐扫描,故无 §7.3 那种「持续低频闪烁」,留静态色块,
+ * 守 §7.4「其余静止」)。reduced-motion 时涟漪/脉冲/抖动全停、颜色反馈(格底色 + 字形)照常(§7.4)。
  */
+import { useRef } from 'react';
 import { SHIP_LENGTHS, shipCells, type Board } from '../../lib/boardLogic.ts';
 import { formatCoord } from '../../lib/format.ts';
+import { useBoardShake } from '../../hooks/useBoardShake.ts';
 import BoardGrid from './BoardGrid.tsx';
+import ShotBurst from './ShotBurst.tsx';
 import { cellIdx, ownMarks, type MarkKind, type ShotLike } from './battleMarks.ts';
 
 export type OwnBoardProps = {
@@ -62,11 +72,18 @@ export default function OwnBoard({ board, enemyShots, pendingInCell }: OwnBoardP
   const isShip = (x: number, y: number) => occ?.has(cellIdx(x, y)) ?? false;
   const marks = ownMarks(enemyShots, pendingInCell);
 
+  // 命中抖动:抖包住 BoardGrid 的 wrapper(整盘一震)。新 hit 由 ShotBurst 增量核判定经 onHit 触发。
+  const boardRef = useRef<HTMLDivElement | null>(null);
+  const shake = useBoardShake(boardRef);
+
   return (
+    // 抖动 wrapper:inline-block 贴合 BoardGrid 宽度,不撑满列、不引发布局位移(只动 transform)。
+    <div ref={boardRef} className="inline-block">
     <BoardGrid
       label="己方海域(被攻击记录)"
       testIdPrefix="own"
       disabled
+      overlay={<ShotBurst marks={marks} onHit={shake} />}
       renderCell={(x, y) => {
         const kind = marks.get(cellIdx(x, y));
         if (kind === 'hit') {
@@ -107,5 +124,6 @@ export default function OwnBoard({ board, enemyShots, pendingInCell }: OwnBoardP
         return `${coord} ${isShip(x, y) ? '我方舰船' : '海域'}`;
       }}
     />
+    </div>
   );
 }
