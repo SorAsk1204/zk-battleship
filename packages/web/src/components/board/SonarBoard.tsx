@@ -18,7 +18,12 @@
  * 或链上 pending 已接管该格(chainPendingOutCell===它,避免本地与链上重画同一空心)或开炮失败(fire 返
  * false → 清,让禁点/标记回退)。useEffect 监听这些变化收口,不留「已 resolved 还顶着空心」的脏态。
  *
- * **功能版**:静态标记 + 功能性准星(线 + 角标,无动画);声呐扫描 / 命中余辉 / 抖动是 M4。
+ * ── 签名元素:活的声呐屏(Design §7.2 / §7.4,M4 Task 4.1)──
+ * 敌方海域整局都是一块**活的声呐屏**(不只我方回合):overlay **常驻**叠放三层兄弟——
+ *   1) SonarSweep:8s/圈匀速旋转的半透明磷光扫描线(相位钉到 document.timeline 原点);
+ *   2) SonarAfterglow:每个 hit/miss 格按其方位角相位锁定的余辉(扫描前沿扫过即达峰再衰减,零漂移);
+ *   3) Crosshair:仅我方攻击回合在最上层画十字准星(hover/focus 落点)。
+ * reduced-motion 时扫描线停转、余辉层不渲染,标记的静态颜色反馈(格底色 + 字形)照常保留(§7.4)。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { type Address } from '../../lib/contracts.ts';
@@ -26,6 +31,8 @@ import { formatCoord } from '../../lib/format.ts';
 import { useAttack } from '../../hooks/useAttack.ts';
 import BoardGrid from './BoardGrid.tsx';
 import Crosshair from './Crosshair.tsx';
+import SonarSweep from './SonarSweep.tsx';
+import SonarAfterglow from './SonarAfterglow.tsx';
 import { cellIdx, sonarDisabledSet, sonarMarks, type MarkKind, type ShotLike } from './battleMarks.ts';
 
 export type SonarBoardProps = {
@@ -107,8 +114,15 @@ export default function SonarBoard({
     [isMyAttackTurn, fire, gameId, contract],
   );
 
-  // 准星仅我方攻击回合渲染(对手回合整盘只读、无 overlay)。
-  const overlay = isMyAttackTurn ? <Crosshair cell={aim} /> : undefined;
+  // 活的声呐屏 overlay(§7.2 签名元素):**常驻**扫描线 + 相位锁定余辉(由 marks 驱动),整局都在;
+  // 十字准星仅我方攻击回合叠在最上层(对手回合无准星但屏仍活)。三层为同级兄弟,后者画在前者之上。
+  const overlay = (
+    <>
+      <SonarSweep />
+      <SonarAfterglow marks={marks} />
+      {isMyAttackTurn && <Crosshair cell={aim} />}
+    </>
+  );
 
   return (
     <div className="space-y-2">
