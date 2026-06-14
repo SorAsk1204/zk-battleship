@@ -472,6 +472,6 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 
 **(Lighthouse,真跑 v13.4.0 headless)** 对战页 **/game/1**(种子 demo-seed:game1 P0 回合,声呐 hit=(0,0) miss=(2,0))=**可访问性 100/100**,0 失败 / 27 通过(含 color-contrast、button-name、aria-required-children/parent、tabindex、target-size、aria-valid-attr-value、landmark-one-main…);大厅 **/**=**100/100**,0 失败 / 19 通过(含 color-contrast、label、link-name)。均远超 ≥90 DoD;color-contrast 通过即决策 1 的 --mist 提亮生效佐证。(注:chrome-launcher 在 Win 收尾删临时 Chrome profile 抛 EPERM,发生在**审计之后**、不影响已落盘报告,score 读取正常。)
 
-**文件**:改 `src/styles/index.css`(--color-mist #5A7484→#6E8A9C + AA 注释)、`Design.md`(调色表 --mist 值 + AA 缘由)。**无新代码、无新组件**(纯验证 + 一 token 微调)。web **394 全绿**(无测试 pin 旧 hex,零改动);tsc -b + vite build 干净。commit `<PENDING>`。
+**文件**:改 `src/styles/index.css`(--color-mist #5A7484→#6E8A9C + AA 注释)、`Design.md`(调色表 --mist 值 + AA 缘由)。**无新代码、无新组件**(纯验证 + 一 token 微调)。web **394 全绿**(无测试 pin 旧 hex,零改动);tsc -b + vite build 干净。commit `aff73b8`(同步 SHA 见随后 docs 提交)。
 
 **控制器复验建议**:① `pnpm demo` 后浏览器 DevTools 切 emulate prefers-reduced-motion → 对战页扫描线停、余辉灭、横幅不滑,色/字在;② 真跑 `npx lighthouse http://localhost:5173/game/1 --only-categories=accessibility`(种子见 demo-seed)复核 ≥90;③ 目视 --mist 次级文字在深底可读(对战页倒计时标签 / EventLog 时间戳 / 大厅地址)。
