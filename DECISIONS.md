@@ -401,3 +401,19 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 **M3 DoD 达成**:三幕可玩(lobby→placement→battle→finish 全链路实测)/ §9.4 全 7 项过(证据如上)/ Worker 证明管线(board+shot,worker chunk snarkjs)+ 持久化(localStorage 正式键 + 导出/导入恢复 + §10 reload)+ 错误映射(13 码 → mapContractError → 页内 toast)就位。
 
 **文件**:新增 `src/hooks/{useReducedMotion.ts, useReducedMotion.test.ts, useAutoRespond.test.ts}`;改 `src/styles/index.css(+reduced-motion 基线 + :focus-visible 基线)`、`src/hooks/{useAttack.ts, useClaimTimeout.ts, useAutoRespond.ts}(+useToast/fail 接 toast;useAutoRespond inFlight 键加 address + 导出 flightKey/gamePrefix)`、`src/components/board/SonarBoard.tsx(删 attack-error 内联)`、`src/pages/Game.tsx(删 claim-error 内联;auto-respond ProofStatus 排除 error 态)`。复用 Toast/useToast·mapContractError·ProofStatus·PersistenceBanner——均 re-use,未重造 M4 动效(只建 reduced-motion 脚手架 + 功能确认)。主线程 snarkjs-free 维持。
+
+---
+
+## M4 Task 4.1 —— 声呐屏签名扫描线 + 相位锁定余辉(§7.2 签名元素)
+
+**(决策 1)余辉用「相位数学锁定」而非 rAF 逐帧命中测试。** §7.2 要求扫描线扫过标记格时该标记提亮再衰减。朴素解=每帧测扫描线角度、与各格 hit-test——昂贵且会漂移。改用:扫描层 WAAPI `rotate(0→360°)` period=8000ms 且 `anim.startTime=0` 钉到 `document.timeline` 原点 → 任意时刻前沿角 `R(t)=(t mod 8000)/8000·360` 是 wall-clock 的确定函数、与挂载时刻无关;每个 hit/miss 余辉跑同周期动画、峰值在关键帧 offset 0、`startTime=(θ/360)·8000`(θ=格中心方位角)。因 startTime 是共享时间轴**绝对**值,峰值恰落在 `R(t)=θ` 即前沿扫过该格的瞬间。**零 per-frame JS、零 setInterval、零漂移;晚挂载的新命中(对战中途 resolve)自动入相**(偏移对绝对时间轴算,非对挂载时刻)。
+
+**(决策 2)角度约定单一来源:0°=正上、顺时针,与 CSS `conic-gradient(from 0deg)` 原生角一致。** `cellAzimuthDeg=atan2(dx,-dy)` 归一 [0,360)(dy 取负把屏幕 y-down 翻成上为正)。conic 0° 天然在 12 点、顺时针增,把亮前沿放 0° 刻度 → `rotate(R)` 后前沿屏幕角=R,与 θ 同零点同向,故 `R(t)=θ` 时前沿压在该格。几何抽纯模块 `sonarPhase.ts`(无 React/DOM)+ 14 单测钉死(四象限/对角 45·135·225·315°/范围/θ→startTime 线性映射)——本仓 node-env vitest 无 WAAPI,唯一能测也必须测的是这套映射(角度错则余辉在错误时刻亮、浏览器一眼可见)。
+
+**(决策 3)三层 overlay 兄弟叠放,余辉由 marks 驱动不回查 DOM。** SonarBoard 的 BoardGrid `overlay` 槽 = `<SonarSweep/>`(常驻,§7.2「活的声呐屏」非仅我方回合)+`<SonarAfterglow marks={marks}/>`(逐 hit/miss 格,pending-out 不发光——§7.2 只点名 hit/miss)+`{isMyAttackTurn && <Crosshair/>}`(最后=最上,M3 准星零改动)。余辉读 SonarBoard 已算好的 marks、不回查 DOM → 纯、可控、reduced-motion 时整层 null。只动 transform(扫描 rotate)/opacity+drop-shadow(余辉),合成层友好。`SonarAfterglow` effect deps=`[glowKey,reduced]`(glowKey=hit/miss 格集的稳定字符串签名)→ 仅命中集真变或 reduced 切换才重建动画,其余渲染零打断相位;WAAPI 全在 cleanup `cancel()`(HMR/卸载无泄漏)。
+
+**(决策 4)reduced-motion 在 JS 侧 gate(承接 M3 决策 2 分工)。** `useReducedMotion()` 为真:扫描不创建旋转动画(静止 conic 层留存)、余辉整层 null;hit/miss 的**颜色反馈**(BoardGrid 静态 `bg-flare/80` ✸ / `bg-console` ◦)是着色非动效,天然保留。false↔true 实时切换由 effect deps 含 reduced 收口(cancel/recreate)。颜色不新增:conic/drop-shadow 的 `rgba(53,224,200,α)`/`rgba(255,122,69,α)` 是 --phosphor/--flare 同色变 alpha(非新调色板项;DRY 跟进留 4.3)。
+
+**(浏览器实证,pnpm demo + playwright,确定性相位核验)** demo 链 31337、Battleship `0x9fe4…a6e0`;种子脚本(e2e lib 真证明直打合约)造 P0 声呐 hit@A-1(方位 315°)+ miss@C-1(330.95°)、终局 P0 回合。`getAnimations()` 实读:扫描 `startTime=0`/running/dur8000;hit 余辉 `actualStartTime=7000`==期望(315/360·8000)、底色 `rgb(255,122,69)`=--flare;miss `7354.34`==期望、底色 `rgb(53,224,200)`=--phosphor——**精确吻合**。冻帧 R=315°(currentTime=7000)截图:亮前沿精确指左上 A-1、命中余辉峰值点亮(opacity 1)、miss 暗相(opacity 0)——**视觉零偏移**。准星 hover G-7 与扫描/余辉三层共存(无回归)。两轮 opus 审查(规格独立重推几何一致 ✓ / 质量 Ready-to-merge,WAAPI 无泄漏·闭包-deps 实为正确)。
+
+**文件**:新增 `src/components/board/{sonarPhase.ts, sonarPhase.test.ts, SonarSweep.tsx, SonarAfterglow.tsx}`;改 `SonarBoard.tsx`(overlay 三层叠放)。web 364→**378 全绿**(+14 sonarPhase);tsc -b + vite build 干净。commit `8bde994`。
