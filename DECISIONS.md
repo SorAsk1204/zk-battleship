@@ -431,3 +431,17 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 **(浏览器实证,修复后复验)** 切换双向(P1→P0→P1)**0 burst**(修复前 2);refresh 0 burst(原子 snapshot+shots+isLoading 提交,BattleAct 首渲染 marks 必齐→播种可靠);真 live 事件(脚本作 P1 应答 P0 的 B-1 攻击=命中)→ 恰 **1 个 sonar hit 脉冲**(+onHit→抖动)触发。两轮 opus 审查(规格 ✅ 合规无越界 / 质量 Ready-to-merge,无 critical/important;唯一 minor=一处过时注释已修)。
 
 **文件**:新增 `src/components/board/{shotBurst.ts, shotBurst.test.ts, ShotBurst.tsx}`、`src/hooks/useBoardShake.ts`;改 `SonarBoard.tsx`/`OwnBoard.tsx`(overlay 接 ShotBurst + shake wrapper + perspectiveKey)、`Game.tsx`(BattleAct 传 perspectiveKey)。web 378→**391 全绿**(+13);tsc -b + vite build 干净。commit `4a1dfbf`(feat)+ `e4e4ea1`(fix)。
+
+---
+
+## M4 Task 4.2b —— 编排过渡(横幅滑入 / 上锁过渡 / 结算扫屏,§7.3-7.4)
+
+**(决策 1)三种过渡按机制分工:横幅/上锁用 CSS @keyframes,结算用 WAAPI。** 横幅滑入与上锁settle是「挂载/重挂即播一次、无运行期分支」→ CSS keyframes 最轻;结算扫屏需按 outcome 运行期分支(胜 phosphor / 负 flare / 取消 none)+ fill 因支异(负 forwards 持留低亮、胜 none 落回常态)+ 受 useReducedMotion() hook 值 gate → 正是 WAAPI-in-effect(同 SonarSweep/ShotBurst)的用武之地。强求统一两边都更差。
+
+**(决策 2)reduced-motion:CSS keyframes 必须包在 `@media (prefers-reduced-motion: no-preference)` 里。** index.css 的全局 reduce 基线只把 `transition` 归零,**不停 `animation`**。故新增的 banner-slide-in/lock-board-settle/lock-banner-in 三个 keyframes 连同其 .anim-* 类全定义在 no-preference media 内 → reduce 用户拿到类但无 keyframe 定义 → 浏览器忽略 animation → 即时落到末态(文字/锁/outcome 色全在,§7.4「保留颜色反馈」)。结算 WAAPI 由 `useReducedMotion()` gate(reduce→不 animate)。
+
+**(决策 3)横幅滑入触发=`key={text}` 重挂内层 `<p>`。** text 变(回合切换)→ React 重挂 `<p>` → CSS animation 在新元件上重播。`bannerLabel` 里每个 text 串与 active 一一对应,故「仅 active 变色不改 text」不会误触发;`aria-live="polite"` 在**稳定的外层 div**(非 keyed 的 `<p>`),重挂子节点仍被 live region 播报。**(决策 4)结算「整屏」=outcome 面板**(结算幕无声呐屏);accent→sweep 种类经纯函数 `finishSweepKind`(已单测)映射(phosphor 胜/flare 负/mist 取消→none),三色同源。负末态 `brightness(0.9)` 用 fill:forwards 持留(§7.3「熄灭为低亮度」仍可读)。
+
+**(浏览器实证,pnpm demo + playwright)** demo 链 game 1:① 横幅——MutationObserver 抓 turn-banner 内新 `<p>`:开炮触发回合切换 → 新 `<p>` 带 **running** `banner-slide-in`/`0.18s`(currentTime 0 刚起),aria-live=polite 在父级。② 结算——种子超时胜终局(P0 攻一炮 + evm_increaseTime 301 + P0 claimTimeout)→ 进结算幕 headline「你赢了」accent=phosphor;monkey-patch `Element.prototype.animate` 跨客户端导航(大厅输入1加入)重进 FinishAct,捕获 outcome 面板 animate:duration **720**、fill `none`、首帧 `brightness(1) drop-shadow(rgba(53,224,200,0))`=磷光扫亮(胜)。willChange 实测为 'auto'(review 修复:从常驻改为 effect 内随动画挂/清)。③ 上锁settle=与横幅同 CSS-keyframe-no-preference 机制(已证)+ 双审查覆盖。两轮 opus 审查(规格 ✅ 合规无越界 / 质量 Ready-to-merge,唯一 minor=willChange 常驻已修)。
+
+**文件**:新增 `src/pages/{finishSweep.ts, finishSweep.test.ts}`;改 `src/styles/index.css`(3 keyframes + .anim-* 全在 no-preference media)、`src/components/TurnBanner.tsx`(key={text}+.anim-banner-slide)、`src/components/PostLockPanel.tsx`(.anim-lock-settle 盘 + .anim-lock-banner 锁条,两 wrapper 防 scale 耦合)、`src/pages/Game.tsx`(FinishAct WAAPI 扫屏 + willChange scoped)。web 391→**394 全绿**(+3 finishSweep);build 干净。commit `9b78b41`(feat)+ `002c394`(review fix)。
