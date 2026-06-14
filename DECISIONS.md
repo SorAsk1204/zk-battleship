@@ -485,7 +485,7 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 - **圆角 ≤4px**:`--radius-*: initial` 让 rounded-md/lg 编译不出;production 仅 `borderRadius:2`(余辉)与 `9999px`(ripple 圆形 sprite)/`rounded-full`(spinner 圆形)——圆形元素是 §7.2「直角卡片」的合理例外。DevProve 的 `rounded` 是 dev-only 页不计。✓
 - **1px --grid 边框 / 4px 间距**:`border border-grid` 通行;Tailwind 间距基准即 4px。✓
 - **扫描线纹理 ≤3%**:无背景扫描线纹理(§7.2「允许」=可选,缺省合规)。✓
-- **Chakra Petch 仅标题** ⚠ **一处偏差**:动作按钮(创建对局/锁定舰队/认领超时胜利/再来一局/导出/导入,8 处 `font-display`)违反 §7.2「Chakra Petch 只用于大标题与回合横幅,克制使用;界面用 Inter」。大标题/h1·h2/回合横幅/结算头条用 Chakra Petch 正确。**此项为可见美学改动 + 用户拥有其锁定 spec 的解释权(军事控制台按钮用展示字体亦可辩),留 M4 验收门给用户定:严格遵 §7.2 改 Inter,或保留 Chakra Petch 按钮。**
+- **Chakra Petch 仅标题** ⚠ **一处偏差**:动作按钮(创建对局/锁定舰队/认领超时胜利/再来一局/导出/导入,8 处 `font-display`)违反 §7.2「Chakra Petch 只用于大标题与回合横幅,克制使用;界面用 Inter」。大标题/h1·h2/回合横幅/结算头条用 Chakra Petch 正确。**用户决定(M4 验收门):保留 Chakra Petch 按钮——有意偏差,军事控制台「控制键」观感自洽。§7.2「界面用 Inter」字面在此让位于用户对自己锁定 spec 的解释;不改代码,记为确认的有意偏差。**
 
 视觉记录:1280px 对战幕截图确认 war-room 美学(深海底 + 磷光青绿标题/交互 + --grid 网格 + --flare 命中/警告 + 等宽坐标日志 + 1px 直角)+ 声呐扫描波束签名元素在跑。
 
