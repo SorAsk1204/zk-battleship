@@ -13,3 +13,6 @@ packages/web/public/zk/
 packages/web/public/deployment.json
 .env
 packages/contracts/broadcast/
+
+# playwright MCP screenshots/snapshots (verification scratch)
+.playwright-mcp/

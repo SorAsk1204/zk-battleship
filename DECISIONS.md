@@ -475,3 +475,22 @@ M3 收尾。真浏览器(pnpm demo + playwright)跑完 §9.4 全 7 项,fresh-loa
 **文件**:改 `src/styles/index.css`(--color-mist #5A7484→#6E8A9C + AA 注释)、`Design.md`(调色表 --mist 值 + AA 缘由)。**无新代码、无新组件**(纯验证 + 一 token 微调)。web **394 全绿**(无测试 pin 旧 hex,零改动);tsc -b + vite build 干净。commit `aff73b8`(同步 SHA 见随后 docs 提交)。
 
 **控制器复验建议**:① `pnpm demo` 后浏览器 DevTools 切 emulate prefers-reduced-motion → 对战页扫描线停、余辉灭、横幅不滑,色/字在;② 真跑 `npx lighthouse http://localhost:5173/game/1 --only-categories=accessibility`(种子见 demo-seed)复核 ≥90;③ 目视 --mist 次级文字在深底可读(对战页倒计时标签 / EventLog 时间戳 / 大厅地址)。
+
+---
+
+## M4 Task 4.3 —— 视觉纪律终审(§7.2-7.4)
+
+**审计方法**:全站 grep(代码级事实比截图更硬)+ 浏览器视觉记录。结果:
+- **颜色**:`#hex` 仅出现在 index.css 的 7 token 定义(+1 处注释引用 #C8D8DC=foam);所有 `rgb/rgba` 字面量都是 `rgba(53,224,200,α)`=--phosphor / `rgba(255,122,69,α)`=--flare 的**同色 alpha 变体**(用在 WAAPI 关键帧 / conic-gradient,CSS var 带独立 alpha 不便处),**无任何调色板外颜色**。Tailwind v4 `--color-*: initial` 已从工具链层强制(bg-red-500 编译不出)。✓
+- **圆角 ≤4px**:`--radius-*: initial` 让 rounded-md/lg 编译不出;production 仅 `borderRadius:2`(余辉)与 `9999px`(ripple 圆形 sprite)/`rounded-full`(spinner 圆形)——圆形元素是 §7.2「直角卡片」的合理例外。DevProve 的 `rounded` 是 dev-only 页不计。✓
+- **1px --grid 边框 / 4px 间距**:`border border-grid` 通行;Tailwind 间距基准即 4px。✓
+- **扫描线纹理 ≤3%**:无背景扫描线纹理(§7.2「允许」=可选,缺省合规)。✓
+- **Chakra Petch 仅标题** ⚠ **一处偏差**:动作按钮(创建对局/锁定舰队/认领超时胜利/再来一局/导出/导入,8 处 `font-display`)违反 §7.2「Chakra Petch 只用于大标题与回合横幅,克制使用;界面用 Inter」。大标题/h1·h2/回合横幅/结算头条用 Chakra Petch 正确。**此项为可见美学改动 + 用户拥有其锁定 spec 的解释权(军事控制台按钮用展示字体亦可辩),留 M4 验收门给用户定:严格遵 §7.2 改 Inter,或保留 Chakra Petch 按钮。**
+
+视觉记录:1280px 对战幕截图确认 war-room 美学(深海底 + 磷光青绿标题/交互 + --grid 网格 + --flare 命中/警告 + 等宽坐标日志 + 1px 直角)+ 声呐扫描波束签名元素在跑。
+
+## M4 Task 4.6 —— README(主交付物)
+
+`README.md`(中文,匹配 Design.md/DECISIONS.md 语言;避免翻译腔)。七节:简介 / 架构(2 Mermaid:monorepo 产物流 + 链上裁判组件视角,+ ASCII 仓库树)/ 单回合时序(Mermaid sequenceDiagram,对齐 §4.5)/ 密码学协议(Poseidon(16) 承诺顺序 + salt 熵 + board/shot 电路 + §5.4 三项绑定表 + verifier N=1/N=4,每条带"为什么")/ 运行步骤(前置 + Windows 空格纪律 + install/demo/test:all)/ 安全注记(§5.5 全文)/ 工程注记(§10 只扫 N 块 + gas 真值表 + Windows 纪律 + 主 bundle snarkjs-free)。
+
+**真值核验(我方交叉核对,全部命中)**:gas 六项与 `.gas-snapshot` 逐字相符(createGame 305878/joinGame 268448/attack 32317/respond miss 275272·hit 296134·第17命中 269985);约束数 board 15334(pot14)/shot 888(pot12)、circom 2.1.9/snarkjs 0.7.6 与 manifest.json 相符;pnpm@11.5.3/node≥22 相符。实现者自查纠了一处陈旧 web 测试数(364→394);我另修一处不精确(intro「Solidity 0.8.24」→ solc 0.8.28/pragma ^0.8.24,foundry.toml 实为 solc=0.8.28)。commit `f51cba3`(README)+ `615cb36`(solc 修正)。
