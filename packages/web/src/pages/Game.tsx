@@ -651,6 +651,8 @@ function FinishAct({ id, view, eventLog }: { id: number; view: GameView; eventLo
     if (!el) return;
     if (reduced || sweepKind === 'none') return; // reduce / 取消:不扫屏(静态 accent 已表意)
     const keyframes = sweepKind === 'flare' ? SWEEP_FLARE_KEYFRAMES : SWEEP_PHOSPHOR_KEYFRAMES;
+    // willChange 只在扫屏进行时挂(本仓惯例:hint 跟随实际动画;扫屏是一次性的,常驻会白占合成层)。
+    el.style.willChange = 'filter';
     const anim = el.animate(keyframes, {
       duration: FINISH_SWEEP_MS,
       easing: 'cubic-bezier(0.2, 0.7, 0.3, 1)',
@@ -658,7 +660,14 @@ function FinishAct({ id, view, eventLog }: { id: number; view: GameView; eventLo
       // 胜:末帧 = identity(常态亮度),无需持留(默认 fill 即落回常态)。
       fill: sweepKind === 'flare' ? 'forwards' : 'none',
     });
-    return () => anim.cancel();
+    const clearHint = () => {
+      el.style.willChange = '';
+    };
+    anim.onfinish = clearHint; // 播完即清 hint(forwards 持留的低亮末态由 fill 维持,与 hint 无关)
+    return () => {
+      anim.cancel();
+      clearHint();
+    };
   }, [reduced, sweepKind]);
 
   // reason 人话(视角相关:胜/负措辞不同;observer 客观)。iWon 对玩家给 true/false,observer 给 undefined。
@@ -690,12 +699,11 @@ function FinishAct({ id, view, eventLog }: { id: number; view: GameView; eventLo
       </div>
 
       {/* outcome 头条 + reason。outcomeRef = 结算扫屏的「整屏」目标(M4.2b;胜磷光扫亮 / 负染橙熄灭,
-          见上 useEffect)。willChange:filter 提示合成层(扫屏只动 filter/opacity)。 */}
+          见上 useEffect。willChange 由该 effect 在扫屏进行时临时挂、播完/卸载即清,不常驻)。 */}
       <div
         ref={outcomeRef}
         className={`border ${accentBorder} bg-abyss px-5 py-6`}
         data-testid="outcome"
-        style={{ willChange: 'filter' }}
       >
         <p className={`font-display text-2xl font-bold ${accentText}`} data-accent={outcome.accent}>
           {outcome.headline}
