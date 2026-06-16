@@ -28,22 +28,32 @@ import {
   createClient,
   createWalletClient,
   custom,
-  fallback,
+  defineChain,
   http,
-  webSocket,
   type EIP1193RequestFn,
+  type Hex,
   type Transport,
   type WalletClient,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
-import { anvil } from 'viem/chains';
 import { createConfig, createConnector } from 'wagmi';
-import { injected } from 'wagmi/connectors';
 import type { Address } from './contracts.ts';
-import { DEMO_ACCOUNTS, type DemoAccount } from './demoAccounts.ts';
+import { getOrCreateIdentity } from './identity.ts';
 
-/** demo 链 = viem 内置 anvil(id 31337);其 rpcUrls.default 已含 http+ws 127.0.0.1:8545。 */
-const DEMO_CHAIN = anvil;
+/**
+ * 联盟链 = GoQuorum QBFT(chainId 1204)。RPC 同源 `/rpc`(nginx 反代到本机节点),
+ * 故无论经公网 IP 还是 SSH 隧道访问都对得上、零 CORS。VITE_RPC_URL 可显式覆盖;
+ * 非浏览器(vitest)回落到本地默认,仅为让 import 不崩(测试不发真实请求)。
+ */
+const RPC_HTTP =
+  (import.meta.env.VITE_RPC_URL as string | undefined) ??
+  (typeof window !== 'undefined' ? `${window.location.origin}/rpc` : 'http://127.0.0.1:8545');
+const DEMO_CHAIN = defineChain({
+  id: 1204,
+  name: 'BSConsortium',
+  nativeCurrency: { name: 'BSC', symbol: 'BSC', decimals: 18 },
+  rpcUrls: { default: { http: [RPC_HTTP] } },
+});
 
 /** VITE_DEMO==='1' 仅在 pnpm demo 启动的 dev server 注入(见 demo.ts / DECISIONS Task 2.5)。 */
 export const IS_DEMO = import.meta.env.VITE_DEMO === '1';
@@ -52,7 +62,7 @@ export const IS_DEMO = import.meta.env.VITE_DEMO === '1';
  * P0 connector 的 id —— DEMO_ACCOUNTS[0].label='P0' → connector id `demo-p0`(见下 connect 的
  * id 模板 `demo-${label.toLowerCase()}`)。AccountSwitcher 据此定位「全新会话默认账户 = P0」的目标。
  */
-export const P0_CONNECTOR_ID = `demo-${DEMO_ACCOUNTS[0].label.toLowerCase()}`;
+export const P0_CONNECTOR_ID = 'demo-p0'; // 残留:demo 切换器已移除,仅留给 wagmi.test.ts 断言
 
 /** wagmi 默认 storage 前缀('wagmi'),recentConnectorId 落在 localStorage 键 `wagmi.recentConnectorId`。 */
 export const WAGMI_RECENT_CONNECTOR_KEY = 'wagmi.recentConnectorId';
@@ -88,14 +98,10 @@ export function deriveWsUrl(rpcUrl: string): string {
 }
 
 /**
- * demo 链的 transport:fallback([webSocket(ws), http(http)])。
- * rpcUrl 取 viem anvil chain 的默认(http://127.0.0.1:8545),ws 由 deriveWsUrl 推导。
- * 这里用 chain 默认而非 deployment.json:配置须静态,且 demo 的 rpcUrl 与 anvil chain 默认恒一致
- * (都是 127.0.0.1:8545);deployment.json 的 rpcUrl 仅供运行时校验/展示,不驱动静态 transport。
+ * transport:http 直连(GoQuorum http RPC,经 nginx /rpc 反代)。GoQuorum 的 ws 在另一个端口、
+ * 反代复杂,这里只走 http;事件订阅由 viem 在 http 上轮询(见下 wagmiConfig.pollingInterval)。
  */
-const RPC_HTTP = DEMO_CHAIN.rpcUrls.default.http[0];
-const RPC_WS = deriveWsUrl(RPC_HTTP);
-const demoTransport: Transport = fallback([webSocket(RPC_WS), http(RPC_HTTP)]);
+const demoTransport: Transport = http(RPC_HTTP);
 
 /**
  * D14 local-account connector:一个实例绑定一个 demo 账户私钥,在浏览器本地签名。
@@ -112,9 +118,11 @@ const demoTransport: Transport = fallback([webSocket(RPC_WS), http(RPC_HTTP)]);
  * 账户 + custom(provider) 造 client。该账户是 json-rpc 型(地址),viem writeContract 因此走
  * eth_sendTransaction,正好被本 provider 截获本地签名。
  */
-type LocalAccountProps = { account: DemoAccount };
+/** 本地账户(身份)最小信息;取代原 DemoAccount(其 label 收紧为 'P0'|'P1',这里放开为 string)。 */
+type LocalAcct = { address: Address; privateKey: Hex; label: string };
+type LocalAccountProps = { account: LocalAcct };
 
-function localAccountConnector(acct: DemoAccount) {
+function localAccountConnector(acct: LocalAcct) {
   return createConnector<unknown, LocalAccountProps>((config) => {
     // 本账户的本地签名钱包 client(account=私钥);transport 用 http 直连 anvil(发 raw tx 用)。
     let wallet: WalletClient | undefined;
@@ -148,12 +156,19 @@ function localAccountConnector(acct: DemoAccount) {
           return `0x${DEMO_CHAIN.id.toString(16)}`;
         case 'eth_sendTransaction': {
           // params[0] 是 viem 组好的 tx request(from/to/data/gas/…)。本地签名 + 发 raw tx。
+          // GoQuorum 免 gas(--miner.gasprice 0):强制 legacy gasPrice:0、剥掉 1559 字段,
+          // 避开 viem 在该链上的 EIP-1559 费用估算(与 de-risk/deploy 脚本同法,已实证可用)。
           const tx = (params as readonly Record<string, unknown>[])[0];
-          return getWallet().sendTransaction({
-            ...(tx as Parameters<WalletClient['sendTransaction']>[0]),
+          const req = {
+            ...tx,
+            maxFeePerGas: undefined,
+            maxPriorityFeePerGas: undefined,
+            type: undefined,
+            gasPrice: 0n,
             account: getWallet().account!,
             chain: DEMO_CHAIN,
-          });
+          } as unknown as Parameters<WalletClient['sendTransaction']>[0];
+          return getWallet().sendTransaction(req);
         }
         default:
           // 其余方法透传给 anvil(只读 client 的底层 EIP-1193 request)。
@@ -224,14 +239,11 @@ function localAccountConnector(acct: DemoAccount) {
 }
 
 /**
- * connectors:
- *   - demo(VITE_DEMO==='1')→ 两个 local-account connector(P0/P1),AccountSwitcher 用
- *     useSwitchAccount 在二者间切。
- *   - 否则 → injected()(MetaMask 等),生产 / 普通 dev 路径(D14)。
+ * connectors:单一**本地身份**连接器——每个浏览器一把自己的 key(getOrCreateIdentity,见 identity.ts)。
+ * 取代原 demo 双账户:浏览器只握自己这把 key、只能签自己的交易,对手无法替你出招(合约按 msg.sender 鉴权)。
+ * label 用「我」(顶栏 IdentityChip 只显地址,不显这个 label)。
  */
-const connectors = IS_DEMO
-  ? DEMO_ACCOUNTS.map((a) => localAccountConnector(a))
-  : [injected()];
+const connectors = [localAccountConnector({ ...getOrCreateIdentity(), label: '我' })];
 
 /**
  * wagmi 全局配置。multiInjectedProviderDiscovery:false——demo 不需要 EIP-6963 多注入发现
@@ -242,6 +254,7 @@ export const wagmiConfig = createConfig({
   connectors,
   transports: { [DEMO_CHAIN.id]: demoTransport },
   multiInjectedProviderDiscovery: false,
+  pollingInterval: 1500,
 });
 
 /** react-query client(wagmi v2 peer);Provider 在 main.tsx 包裹。 */

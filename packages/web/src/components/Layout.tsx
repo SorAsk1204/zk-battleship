@@ -1,5 +1,5 @@
 import { Link, Outlet } from 'react-router-dom';
-import AccountSwitcher from './AccountSwitcher.tsx';
+import IdentityChip from './IdentityChip.tsx';
 
 /** 全站外壳:header 标题 + 右侧 demo 账户切换器 + main 容器。直角为主,radius ≤4px(Design §7.2)。 */
 export default function Layout() {
@@ -12,8 +12,8 @@ export default function Layout() {
         >
           ZK BATTLESHIP
         </Link>
-        {/* demo 双账户切换;非 VITE_DEMO 构建该组件返回 null,不占位。 */}
-        <AccountSwitcher />
+        {/* 本浏览器身份(地址 + 导入/重置);取代原 demo P0/P1 切换器。 */}
+        <IdentityChip />
       </header>
       <main className="mx-auto w-full max-w-6xl flex-1 px-6 py-8">
         <Outlet />

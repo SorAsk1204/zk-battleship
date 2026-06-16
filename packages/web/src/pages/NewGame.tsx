@@ -21,7 +21,6 @@ import { useEffect, useReducer } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAccount } from 'wagmi';
 import { randomSalt } from '../lib/salt.ts';
-import { IS_DEMO } from '../lib/wagmi.ts';
 import { useLockFleet } from '../hooks/useLockFleet.ts';
 import { preload } from '../hooks/useProver.ts';
 import ProofStatus from '../components/ProofStatus.tsx';
@@ -117,7 +116,7 @@ export default function NewGame() {
               type="button"
               data-testid="lock-fleet"
               onClick={onLock}
-              disabled={busy || !isConnected || !IS_DEMO}
+              disabled={busy || !isConnected}
               className="border border-phosphor bg-grid px-4 py-2 font-display text-sm font-bold text-phosphor hover:bg-grid/80 disabled:opacity-50"
             >
               {busy ? '锁定中…' : '锁定舰队'}
@@ -127,14 +126,9 @@ export default function NewGame() {
           {/* 两阶段状态(§7.5):证明(本地)/ 链上确认;ProofStatus 内部叠 board 进度 */}
           <ProofStatus status={status} circuit="board" />
 
-          {/* 非 demo / 未连接的行动指引(§7.6) */}
-          {!IS_DEMO && (
-            <p className="font-mono text-xs text-mist">
-              (非 demo 构建:创建对局需先在另一个终端运行 pnpm demo 启动本地链与账户)
-            </p>
-          )}
-          {IS_DEMO && !isConnected && (
-            <p className="font-mono text-xs text-mist">尚未连接账户(demo 应自动连接 P0/P1)。</p>
+          {/* 未连接提示(身份连接器挂载即自动连接,通常一闪而过) */}
+          {!isConnected && (
+            <p className="font-mono text-xs text-mist">正在连接你的本地身份…</p>
           )}
         </div>
       </div>

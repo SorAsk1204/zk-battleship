@@ -1,0 +1,108 @@
+# 3-node GoQuorum QBFT consortium chain (chainId 1204).
+# node0 publishes RPC to host 127.0.0.1:8545/8546 (nginx + local deploy reach it there).
+# All validators seal (QBFT); peering via /data/static-nodes.json on the fixed subnet.
+networks:
+  bschain-net:
+    name: bschain-net
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.30.0.0/24
+
+services:
+  bschain-node0:
+    image: quorumengineering/quorum:latest
+    container_name: bschain-node0
+    restart: unless-stopped
+    networks:
+      bschain-net:
+        ipv4_address: 172.30.0.11
+    ports:
+      - "127.0.0.1:8545:8545"
+      - "127.0.0.1:8546:8546"
+    volumes:
+      - /opt/bschain/node0:/data
+    command:
+      - "--datadir=/data"
+      - "--networkid=1204"
+      - "--nodiscover"
+      - "--verbosity=3"
+      - "--syncmode=full"
+      - "--cache=128"
+      - "--mine"
+      - "--miner.gasprice=0"
+      - "--unlock=0x54546f5b9168d626abf41ec30d6441dbb66abba5"
+      - "--password=/data/password.txt"
+      - "--allow-insecure-unlock"
+      - "--http"
+      - "--http.addr=0.0.0.0"
+      - "--http.port=8545"
+      - "--http.api=admin,eth,debug,net,txpool,web3,istanbul,qbft,miner,personal"
+      - "--http.corsdomain=*"
+      - "--http.vhosts=*"
+      - "--ws"
+      - "--ws.addr=0.0.0.0"
+      - "--ws.port=8546"
+      - "--ws.api=admin,eth,debug,net,txpool,web3,istanbul,qbft"
+      - "--ws.origins=*"
+      - "--port=30303"
+      - "--nat=extip:172.30.0.11"
+      - "--ipcdisable"
+
+  bschain-node1:
+    image: quorumengineering/quorum:latest
+    container_name: bschain-node1
+    restart: unless-stopped
+    networks:
+      bschain-net:
+        ipv4_address: 172.30.0.12
+    volumes:
+      - /opt/bschain/node1:/data
+    command:
+      - "--datadir=/data"
+      - "--networkid=1204"
+      - "--nodiscover"
+      - "--verbosity=3"
+      - "--syncmode=full"
+      - "--cache=128"
+      - "--mine"
+      - "--miner.gasprice=0"
+      - "--unlock=0xa6613ac15e64bab27924ff9a7b21a4b2cfe603a6"
+      - "--password=/data/password.txt"
+      - "--allow-insecure-unlock"
+      - "--http"
+      - "--http.addr=0.0.0.0"
+      - "--http.port=8545"
+      - "--http.api=admin,eth,debug,net,txpool,web3,istanbul,qbft,miner"
+      - "--port=30303"
+      - "--nat=extip:172.30.0.12"
+      - "--ipcdisable"
+
+  bschain-node2:
+    image: quorumengineering/quorum:latest
+    container_name: bschain-node2
+    restart: unless-stopped
+    networks:
+      bschain-net:
+        ipv4_address: 172.30.0.13
+    volumes:
+      - /opt/bschain/node2:/data
+    command:
+      - "--datadir=/data"
+      - "--networkid=1204"
+      - "--nodiscover"
+      - "--verbosity=3"
+      - "--syncmode=full"
+      - "--cache=128"
+      - "--mine"
+      - "--miner.gasprice=0"
+      - "--unlock=0xdd6d49d182a5e0d5e2c1f093bc35f725723b1b87"
+      - "--password=/data/password.txt"
+      - "--allow-insecure-unlock"
+      - "--http"
+      - "--http.addr=0.0.0.0"
+      - "--http.port=8545"
+      - "--http.api=admin,eth,debug,net,txpool,web3,istanbul,qbft,miner"
+      - "--port=30303"
+      - "--nat=extip:172.30.0.13"
+      - "--ipcdisable"
