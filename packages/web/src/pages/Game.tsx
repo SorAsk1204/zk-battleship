@@ -487,10 +487,12 @@ function BattleStatus({
 
   // 倒计时(§4.3 TIMEOUT=300):仅对战且有义务方时计时。
   const hasObligation = view.obligatedIdx !== null;
-  const { label: timeLabel, expired } = useCountdown({
+  const { label: timeLabel, expired, remaining } = useCountdown({
     lastActionAt: view.lastActionAt,
     active: hasObligation,
   });
+  // 归零态(已超时,或剩余 floor 到 0 但差 expired 的那 1s 窗口):统一用 --flare 橙 + label 一致格式。
+  const timeUp = expired || remaining === 0;
 
   // 我是否非义务方玩家(claimant):义务方负有行动义务、不能认领自己超时(§4.3 + §10)。
   const iAmObligated =
@@ -508,11 +510,11 @@ function BattleStatus({
             {iAmObligated ? '你的行动倒计时' : '对手行动倒计时'}
           </span>
           <span
-            className={'font-mono text-sm font-bold ' + (expired ? 'text-flare' : 'text-phosphor')}
+            className={'font-mono text-sm font-bold ' + (timeUp ? 'text-flare' : 'text-phosphor')}
             data-testid="countdown"
             data-expired={expired ? '1' : '0'}
           >
-            {expired ? '00:00' : timeLabel}
+            {timeLabel}
           </span>
         </div>
       )}

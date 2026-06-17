@@ -8,13 +8,15 @@
  * 纯时间核(computeCountdown)抽出可单测(node vitest 无定时器/DOM 也能断言边界:剩余=0 的临界、
  * 负数夹到 0、未开始锚点);hook 只负责「拿到 now → 调纯核」。
  *
- * **now 取链上块时间(不是纯墙钟)**:合约 claimTimeout 的权威判据是 `block.timestamp > lastActionAt
- * + TIMEOUT`。本地链 auto-mine 时块时间≈墙钟,但测试 / 演示会用 `evm_increaseTime` 把**链时间**跳到
- * 墙钟之前——此时纯墙钟倒计时不会到点,但链上已可 claimTimeout。故本 hook 周期性 `getBlock()` 取链上
- * 最新块时间作锚,两次取数之间用墙钟增量插值平滑 1s 跳动(`now = 链锚 + (Date.now()-取锚墙钟)/1000`)。
- * 如此 `evm_increaseTime` 后下一次取块即把跳变带进来,倒计时与 claim 按钮如实反映链上超时;真正可否
- * 成功仍由合约裁决(NOT_TIMEOUT 经 mapContractError 提示)。即本 hook 决定「按钮何时出现」,合约决定
- * 「点了是否成功」。取块失败(RPC 抖动)回退纯墙钟(degrade,不致整条倒计时卡死)。
+ * **now 取「墙钟 + 链领先量」(projectNowSec),不是裸取链上块时间**:合约 claimTimeout 的权威判据是
+ * `block.timestamp > lastActionAt + TIMEOUT`,而"此刻发一笔交易会被打进的块的 timestamp"≈ `max(latest块+1, 节点墙钟)`。
+ * 两种链都要照顾:(a) 本系统真链(GoQuorum 空闲不出空块)与默认 anvil(仅按交易出块)——义务方不行动时
+ * **没有新块**,latest 块时间冻结、随真实时间越拖越后;此时必须用墙钟兜底,否则倒计时锚到冻结块时间会卡住、
+ * 永不归零、claim 按钮永不出现。(b) 测试 / 演示用 `evm_increaseTime` 把**链时间跳到 deadline 之后(未来)**,
+ * 或服务器时钟超前——此时链时间领先墙钟,应跟随链时间。故周期性 `getBlock()` 取最新块时间作锚,
+ * `projectNowSec` 取「墙钟 + max(0, 链相对墙钟领先量)」:链落后/冻结退化纯墙钟、链领先则跟随链。本 hook 决定
+ * 「按钮何时出现」,合约决定「点了是否成功」(NOT_TIMEOUT 经 mapContractError 提示)。取块失败(RPC 抖动)
+ * anchor 为 null,projectNowSec 回退纯墙钟(degrade,不致整条倒计时卡死)。
  *
  * 谁能 claim(§4.3 + §10):义务方(obligatedIdx)负有行动义务、不能 claim 自己超时;非义务方且是本局
  * 玩家才是 claimant——该判定在调用方(依赖 myIdx/obligatedIdx),本 hook 只管「时间到没到」。
@@ -65,7 +67,27 @@ export type UseCountdownArgs = {
 };
 
 /** 链时间锚:某次 getBlock 取到的块时间(chainSec)+ 取到那一刻的墙钟(wallMs),用于插值。 */
-type ChainAnchor = { chainSec: number; wallMs: number };
+export type ChainAnchor = { chainSec: number; wallMs: number };
+
+/**
+ * 估算"此刻发一笔交易会被打进的那个块的 block.timestamp"(= 合约超时判据 `block.timestamp > lastActionAt+TIMEOUT`
+ * 的同源量)。取「墙钟 + 链相对墙钟的领先量(clamp 到 ≥0)」——出块矿工本身就按 `max(parent+1, 节点墙钟)` 盖时间戳:
+ *   - 链落后 / 冻结(本系统真链:空闲不出空块,latest 块时间停在上一笔交易、随真实时间越拖越后)→ 领先量为负 →
+ *     退化为纯墙钟,倒计时照真实时间推进、到点 expired。**这是修复点**:旧实现 `chainSec + 自取锚以来的墙钟增量`,
+ *     在每 5s 重锚把 wallMs 重置、chainSec 又恒为冻结值时,now 被钳在 [chainSec, chainSec+5) 锯齿、永不越过 deadline →
+ *     倒计时卡住、永不归零、claim 按钮永不出现。
+ *   - 链领先(evm_increaseTime 把链时间跳到 deadline 之后 / 服务器时钟超前)→ 跟随链时间,与合约 block.timestamp 判据一致。
+ * anchor=null(首帧未取到 / 取块失败)→ 纯墙钟。纯函数,与 computeCountdown 同层单测(冻结锚防卡死 + 未来锚跟随)。
+ * 残留:若链节点系统时钟"持续"落后真实时间且新块也带落后时间戳(真实时钟漂移,非空闲冻结),expired 可能略早于
+ * 合约判据,点 claim 被 NOT_TIMEOUT 一次性拒(可重试,经 mapContractError 提示)——QBFT 多节点一般 NTP 同步,概率低。
+ */
+export function projectNowSec(anchor: ChainAnchor | null, wallNowMs: number): number {
+  const wallSec = Math.floor(wallNowMs / 1000);
+  if (!anchor || !Number.isFinite(anchor.chainSec)) return wallSec;
+  // 取锚那一刻链时间相对墙钟的领先量(秒);负 = 链落后 / 冻结。
+  const chainLead = anchor.chainSec - Math.floor(anchor.wallMs / 1000);
+  return wallSec + Math.max(0, chainLead);
+}
 
 /** 链锚轮询间隔(ms):每 5s 取一次最新块时间,把 evm_increaseTime 的跳变带进来。 */
 const CHAIN_POLL_MS = 5000;
@@ -113,11 +135,8 @@ export function useCountdown({ lastActionAt, active }: UseCountdownArgs): Countd
     return { remaining: TIMEOUT_SECONDS, expired: false, label: formatRemaining(TIMEOUT_SECONDS) };
   }
 
-  // now:有链锚 → 链锚 + 墙钟增量插值;无锚(首帧 / 取块失败)→ 纯墙钟。
-  const anchor = anchorRef.current;
-  const nowSec = anchor
-    ? anchor.chainSec + Math.floor((Date.now() - anchor.wallMs) / 1000)
-    : Math.floor(Date.now() / 1000);
+  // now:墙钟 + 链领先量(projectNowSec)。空闲冻结链退化纯墙钟防卡死,链领先(evm_increaseTime/服务器超前)跟随链时间。
+  const nowSec = projectNowSec(anchorRef.current, Date.now());
 
   const state = computeCountdown(lastActionAt, nowSec);
   return { ...state, label: formatRemaining(state.remaining) };
