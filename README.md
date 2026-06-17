@@ -12,6 +12,35 @@
 
 ---
 
+## 快速开始(克隆 · 构建 · 在线试玩)
+
+### 在线试玩(免安装)
+
+浏览器直接打开 **http://101.35.224.67:8080** —— 部署在自建 **GoQuorum QBFT 联盟链**(链 ID `1204`、免 gas)上的公网版本。每个浏览器进来**自动分配一个独立链上身份**(本地生成私钥、0 余额即玩;合约按 `msg.sender` 鉴权,对手无法替你出招)。玩法:建一局拿到对局编号 `#N` 发给对手 → 对手用编号加入 → 自动进对战幕、轮流开炮并自动应答;换个浏览器 / 设备 / 无痕窗口就是另一个身份,可以自己和自己对打。
+
+> nginx 同源托管:`8080` 直出静态前端 + `/rpc` 反代联盟链节点;前端用 `当前源 + /rpc` 自适应 RPC,零跨域。完整部署拓扑(3 节点 docker-compose + nginx 配置)见 [`infra/`](infra/)。
+
+### 本地克隆 + 构建
+
+`packages/contracts/lib/forge-std` 是 git 子模块,克隆**务必带 `--recurse-submodules`**(否则合约编译 / 测试会缺依赖):
+
+```bash
+git clone --recurse-submodules https://github.com/SorAsk1204/zk-battleship.git
+cd zk-battleship
+pnpm install
+```
+
+> 已经 clone 但漏了子模块?补一句即可:`git submodule update --init --recursive`。
+
+电路 artifacts(wasm/zkey/vkey ≈ 17MB)随仓库提交,**克隆即用**,无需下载 72MB ptau 或重跑 trusted setup。装好依赖后:
+
+- **本地一键演示**:`pnpm demo` → 起 Anvil + 程序化部署 + dev server,打开 `http://127.0.0.1:5173`,用右上角 P0/P1 切换器在同一页打完整一局。
+- **全量测试**:`pnpm test:all` → 按序跑 circuits / contracts / e2e / web 四个包(含真实证明的 e2e)。
+
+前置工具版本(Node ≥ 22、pnpm 11.x,以及仅在重编电路 / 跑合约时才需要的 circom、Foundry)与各步骤细节见下文 **§4 运行步骤**。
+
+---
+
 ## 1. 架构
 
 四个 workspace 包,产物(artifacts + verifier.sol)是把它们串起来的关键:电路一端编译出 wasm/zkey/vkey 与 Solidity verifier,wasm/zkey 流向前端 Worker、verifier.sol 流向合约,JS 真理源(`@zk-battleship/circuits` 的纯逻辑)被前端 / e2e / 合约 fixture 三方共用,杜绝"承诺输入数组各拼各的"。
