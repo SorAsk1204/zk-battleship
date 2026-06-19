@@ -43,6 +43,8 @@ pnpm install
 
 ## 1. 架构
 
+> 想要**代码级的深入**(四个包如何咬合、数据如何流、关键 `文件:行号`、部署拓扑)看 **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**。本节只给鸟瞰。
+
 四个 workspace 包,产物(artifacts + verifier.sol)是把它们串起来的关键:电路一端编译出 wasm/zkey/vkey 与 Solidity verifier,wasm/zkey 流向前端 Worker、verifier.sol 流向合约,JS 真理源(`@zk-battleship/circuits` 的纯逻辑)被前端 / e2e / 合约 fixture 三方共用,杜绝"承诺输入数组各拼各的"。
 
 ```mermaid
@@ -284,6 +286,7 @@ pnpm test:all
 
 ## 7. 参考
 
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) —— 代码级架构文档(各包咬合、数据流、合约/电路/前端实现细节、构建管线、部署拓扑、关键 `文件:行号`)。
 - Design.md —— 完整设计规格(游戏规则 §4、密码学协议 §5、合约 §6、边界裁决 §10 等锁定项的来源)。
 - DECISIONS.md —— 逐条实现决策(snarkjs 版本钉死、JS 真理源、Worker 证明拆分、demo connector 等的真实理由)。
 - Dark Forest(链上隐藏信息范式)、BattleZips / zku.one(同类 Battleship 电路写法)、circomlib、snarkjs。
